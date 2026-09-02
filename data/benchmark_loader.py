@@ -291,10 +291,44 @@ def get_benchmark_info(category: str) -> Dict:
 # BULK AVAILABILITY CHECK  (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_all_category_benchmarks() -> Dict[str, Optional[Dict]]:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BROAD MARKET  (dual benchmarking)
+# ─────────────────────────────────────────────────────────────────────────────
+
+MARKET_INDEX_NAME   = "NIFTY 500"
+MARKET_DISPLAY_NAME = "Nifty 500 TRI"
+
+
+def get_market_nav() -> Optional[pd.DataFrame]:
     """
-    Find benchmark schemes for all 12 categories.
-    Used on the Dashboard page to show benchmark coverage.
+    NAV series for the broad market — the SECOND yardstick shown alongside
+    each fund's SEBI category benchmark.
+
+    Nifty 500 covers roughly 95% of Indian listed market capitalisation,
+    which makes it the closest available stand-in for "just owning the
+    market". A mid-cap fund can beat Nifty Midcap 150 while lagging Nifty
+    500, or the reverse; both readings are real and the pair is the point.
+
+    Returns DataFrame(DatetimeIndex, 'nav'), or None.
     """
-    from utils.constants import CATEGORIES
-    return {cat: find_benchmark_scheme(cat) for cat in CATEGORIES}
+    try:
+        from data.tri_loader import get_tri_nav
+        nav = get_tri_nav(MARKET_INDEX_NAME)
+        if nav is not None and not nav.empty:
+            return nav
+    except Exception as e:
+        logger.warning(f"Market benchmark ({MARKET_INDEX_NAME}) unavailable: {e}")
+    return None
+
+
+def is_market_same_as_category(category: str) -> bool:
+    """
+    True when a category's own benchmark IS the broad market index.
+
+    Applies to Flexi Cap, Multi Cap, ELSS, Value, Contra and Focused — all
+    benchmarked to Nifty 500 under SEBI. For those the two sets of numbers
+    coincide by construction, and the UI must say so rather than presenting
+    them as two independent readings.
+    """
+    return CATEGORY_TO_TRI_INDEX.get(category) == MARKET_INDEX_NAME

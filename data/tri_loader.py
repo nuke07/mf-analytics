@@ -185,7 +185,7 @@ def get_tri_staleness_warning(index_name: str) -> Optional[str]:
 
     if delta > TRI_STALENESS_DAYS:
         return (
-            f"⚠️ {index_name} TRI data is **{delta} days old** "
+            f"{index_name} TRI data is **{delta} days old** "
             f"(last update: {last_date.strftime('%d %b %Y')}). "
             "Run `python -m scripts.update_indices` locally and push to refresh."
         )

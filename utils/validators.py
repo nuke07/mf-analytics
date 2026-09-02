@@ -12,7 +12,6 @@ Streamlit UI can display contextual warnings without crashing.
 """
 
 import pandas as pd
-import numpy as np
 from typing import List, Tuple, Dict, Optional
 from utils.constants import MIN_DAYS
 
@@ -64,12 +63,12 @@ def check_nav_series(nav: Optional[pd.Series]) -> Tuple[bool, List[str]]:
         pct = nan_count / len(nav) * 100
         if pct > 20:
             warnings.append(
-                f"⚠️ High missing data: {nan_count} of {len(nav)} NAV values are NaN ({pct:.1f}%). "
+                f"High missing data: {nan_count} of {len(nav)} NAV values are NaN ({pct:.1f}%). "
                 f"Results may be unreliable."
             )
         else:
             warnings.append(
-                f"ℹ️ {nan_count} missing NAV values ({pct:.1f}%) were forward-filled."
+                f"{nan_count} missing NAV values ({pct:.1f}%) were forward-filled."
             )
 
     return True, warnings
@@ -148,82 +147,10 @@ def get_history_years(nav: Optional[pd.Series]) -> float:
 # RETURNS SERIES VALIDATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def check_returns_series(returns: Optional[pd.Series]) -> Tuple[bool, List[str]]:
-    """
-    Validate a returns series before using it in statistical calculations.
-
-    Checks:
-      - Series is non-empty after dropping NaN/inf
-      - Reports extreme outliers that may signal data errors
-
-    Args:
-        returns: Daily simple or log return series
-
-    Returns:
-        (is_valid, warnings)
-    """
-    warnings: List[str] = []
-
-    if returns is None or len(returns) == 0:
-        return False, ["Returns series is empty."]
-
-    # Clean: remove NaN and inf
-    clean = returns.replace([np.inf, -np.inf], np.nan).dropna()
-
-    if len(clean) == 0:
-        return False, ["All return values are NaN or infinite after cleaning."]
-
-    if len(clean) < 10:
-        return False, [f"Only {len(clean)} valid return observations — too few for reliable statistics."]
-
-    # Check for extreme outlier returns (likely NAV correction / data error)
-    q999 = float(clean.quantile(0.999))
-    q001 = float(clean.quantile(0.001))
-
-    if q999 > 0.50:   # +50% in a single day is impossible for a mutual fund
-        warnings.append(
-            f"⚠️ Extreme positive daily return detected ({q999*100:.1f}%). "
-            f"This likely indicates a NAV data error."
-        )
-    if q001 < -0.50:
-        warnings.append(
-            f"⚠️ Extreme negative daily return detected ({q001*100:.1f}%). "
-            f"This likely indicates a NAV data error."
-        )
-
-    return True, warnings
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY-LEVEL VALIDATION
 # ─────────────────────────────────────────────────────────────────────────────
-
-def check_category_size(fund_list: list, min_funds: int = 4) -> Tuple[bool, List[str]]:
-    """
-    Validate that a category has enough funds for meaningful quartile analysis.
-    Quartiles need at least 4 funds (1 per quartile).
-
-    Args:
-        fund_list: List of fund dicts in the category
-        min_funds: Minimum number of funds required (default 4)
-
-    Returns:
-        (is_valid, warnings)
-    """
-    warnings: List[str] = []
-    n = len(fund_list)
-
-    if n == 0:
-        return False, ["No funds found in this category."]
-
-    if n < min_funds:
-        warnings.append(
-            f"Only {n} fund(s) in this category. "
-            f"Quartile rankings require at least {min_funds} funds — "
-            f"rankings will be approximate."
-        )
-
-    return True, warnings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -243,8 +170,15 @@ def build_quality_report(
       - history_years
       - data_points
       - missing_pct
+      - start_date    (pd.Timestamp or None)
+      - end_date      (pd.Timestamp or None)
       - coverage (per-metric bool map)
       - warnings (list of strings)
+
+    start_date and end_date are the first and last dates of the NAV series.
+    Both callers (the Data Quality page and the Fund Analytics quality tab)
+    have always read these keys; they were simply never returned, so those
+    columns rendered "N/A" for every fund and exported that way to CSV.
     """
     all_warnings: List[str] = []
 
@@ -257,6 +191,8 @@ def build_quality_report(
             "history_years": 0.0,
             "data_points": 0,
             "missing_pct": 100.0,
+            "start_date": None,
+            "end_date": None,
             "coverage": {m: False for m in MIN_DAYS},
             "warnings": all_warnings,
         }
@@ -274,6 +210,8 @@ def build_quality_report(
         "history_years": get_history_years(nav),
         "data_points": len(nav),
         "missing_pct": round(missing_pct, 1),
+        "start_date": nav.index[0],
+        "end_date": nav.index[-1],
         "coverage": get_data_coverage(nav),
         "warnings": all_warnings,
     }

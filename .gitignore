@@ -51,3 +51,13 @@ desktop.ini
 # ─── Environment variables ────────────────────────────────────────────────────
 .env
 .env.local
+
+# ─── Local research scratch (kept out of the app repo entirely) ──────────────
+# Study scripts and their outputs live outside this repo — see the project docs
+# for the findings. Nothing here is imported by the app.
+research/
+
+# ─── Test stub must never be importable from the repo root ────────────────────
+# tests/sitecustomize.py is tracked and intentional. A sitecustomize.py at the
+# ROOT would be auto-imported by every python/streamlit run in this directory.
+/sitecustomize.py

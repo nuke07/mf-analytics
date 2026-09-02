@@ -15,10 +15,9 @@ Quartile System:
     Determined by LOWER_IS_BETTER in utils/constants.py.
 """
 
-import numpy as np
 import pandas as pd
-from typing import Optional, Dict, List
-from utils.constants import LOWER_IS_BETTER, METRIC_LABELS, QUARTILE_COLORS
+from typing import Dict, List
+from utils.constants import LOWER_IS_BETTER
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,14 +84,13 @@ QUARTILE_METRICS: List[str] = [
     # Risk-Adjusted
     "sharpe", "sortino", "calmar",
     # Consistency
-    "avg_rolling_1y", "median_rolling_1y", "std_rolling_1y",
-    "best_rolling_1y", "worst_rolling_1y",
-    "avg_rolling_3y", "median_rolling_3y", "std_rolling_3y",
+    "median_rolling_1y", "std_rolling_1y",
+    "best_rolling_1y", "worst_rolling_1y", "median_rolling_3y", "std_rolling_3y",
     "best_rolling_3y", "worst_rolling_3y",
     # Distribution
     "skewness", "kurtosis",
     # Stability
-    "positive_freq", "negative_freq", "win_rate",
+    "positive_freq", "win_rate",
     # Persistence (rolling periods)
     "pct_positive_rolling_1y", "pct_positive_rolling_3y",
     # Alpha Generation (Phase A)
@@ -100,16 +98,20 @@ QUARTILE_METRICS: List[str] = [
     "information_ratio", "jensens_alpha", "alpha_tstat",
     "up_capture", "down_capture", "capture_ratio",
     # Momentum (Phase B)
-    "momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m",
-    "alpha_momentum", "momentum_sharpe",
+    "momentum_1m", "momentum_3m", "momentum_6m",
+    "alpha_momentum",
     # Alpha Persistence & Regime (Phase B)
     "alpha_persistence", "bull_alpha", "bear_alpha",
     "alpha_regime_ratio", "drawdown_recovery_rate",
-    # Factor Model (Phase C)
-    "alpha_4f", "alpha_4f_tstat", "beta_market_4f",
-    "beta_smb", "beta_hml", "beta_wml", "r_squared_4f",
+    # Factor Model (6F)
+    "alpha_6f", "alpha_6f_tstat", "r_squared_6f", "beta_market_6f",
+    "beta_smb", "beta_hml", "beta_wml", "beta_qmj", "beta_bab",
     "contrib_market", "contrib_smb", "contrib_hml",
-    "contrib_wml", "contrib_alpha",
+    "contrib_wml", "contrib_qmj", "contrib_bab", "contrib_alpha",
+    # Dual benchmarking — alpha family vs the broad market
+    "excess_return_mkt", "beta_mkt", "r_squared_mkt", "tracking_error_mkt",
+    "information_ratio_mkt", "jensens_alpha_mkt", "alpha_tstat_mkt",
+    "up_capture_mkt", "down_capture_mkt", "capture_ratio_mkt",
 ]
 
 
@@ -143,39 +145,4 @@ def build_full_quartile_table(fund_metrics: Dict[str, Dict]) -> pd.DataFrame:
     return add_quartile_columns(metrics_df)
 
 
-def get_quartile_summary_for_fund(
-    fund_name: str,
-    full_df:   pd.DataFrame,
-) -> pd.DataFrame:
-    if fund_name not in full_df.index:
-        return pd.DataFrame(columns=["Metric", "Quartile"])
-    quartile_cols = [c for c in full_df.columns if c.endswith("_quartile")]
-    rows = []
-    for col in quartile_cols:
-        metric_key = col.replace("_quartile", "")
-        label      = METRIC_LABELS.get(metric_key, metric_key)
-        quartile   = full_df.loc[fund_name, col]
-        rows.append({"Metric": label, "Quartile": quartile})
-    return pd.DataFrame(rows)
 
-
-def get_rankings_for_metric(
-    full_df:    pd.DataFrame,
-    metric_key: str,
-    top_n:      int  = 10,
-    ascending:  bool = False,
-) -> pd.DataFrame:
-    if metric_key not in full_df.columns:
-        return pd.DataFrame()
-    quartile_col = f"{metric_key}_quartile"
-    label        = METRIC_LABELS.get(metric_key, metric_key)
-    sub = full_df[[metric_key]].copy()
-    if quartile_col in full_df.columns:
-        sub[quartile_col] = full_df[quartile_col]
-    sub = sub.dropna(subset=[metric_key])
-    sub = sub.sort_values(metric_key, ascending=ascending).head(top_n)
-    sub = sub.reset_index()
-    sub.columns = ["Fund Name", label] + (
-        ["Quartile"] if quartile_col in full_df.columns else []
-    )
-    return sub

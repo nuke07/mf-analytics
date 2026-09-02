@@ -22,11 +22,12 @@ Chart 4 — Momentum Heatmap
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from visualizations._theme import (
     base_layout, empty_figure, get_color,
-    UP_COLOR, DOWN_COLOR, NEUTRAL_COLOR,
+    UP_COLOR, DOWN_COLOR,
 )
+from utils import theme as T
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,7 +46,10 @@ def plot_momentum_bars(
 
     Args:
         fund_metrics_dict: {fund_name: metrics_dict}
-                           Must contain momentum_3m, momentum_6m, momentum_12m.
+                           Must contain momentum_3m, momentum_6m and cagr_1y.
+                           The 12-month rung reads cagr_1y: a 12-month
+                           trailing return and a 1Y CAGR are the same
+                           number, so momentum_12m was retired.
         height:            Chart height in pixels.
 
     Returns:
@@ -55,7 +59,7 @@ def plot_momentum_bars(
         k: v for k, v in fund_metrics_dict.items()
         if v.get("is_valid") and any(
             v.get(m) is not None
-            for m in ["momentum_3m", "momentum_6m", "momentum_12m"]
+            for m in ["momentum_3m", "momentum_6m", "cagr_1y"]
         )
     }
 
@@ -65,7 +69,7 @@ def plot_momentum_bars(
     WINDOWS = [
         ("momentum_3m",  "3 Month"),
         ("momentum_6m",  "6 Month"),
-        ("momentum_12m", "12 Month"),
+        ("cagr_1y",      "1 Year"),
     ]
 
     fig = go.Figure()
@@ -156,7 +160,7 @@ def plot_bull_bear_alpha(
         name          = "Bull Market Alpha",
         x             = names,
         y             = bull_vals,
-        marker_color  = "rgba(33,150,243,0.80)",
+        marker_color  = T.rgba(T.DATA_PRIMARY, 0.80),
         hovertemplate = "<b>%{x}</b><br>Bull Alpha: %{y:.2f}%<extra></extra>",
     ))
 
@@ -165,7 +169,7 @@ def plot_bull_bear_alpha(
         name          = "Bear Market Alpha",
         x             = names,
         y             = bear_vals,
-        marker_color  = "rgba(255,152,0,0.80)",
+        marker_color  = T.rgba(T.WARN, 0.80),
         hovertemplate = "<b>%{x}</b><br>Bear Alpha: %{y:.2f}%<extra></extra>",
     ))
 
@@ -231,7 +235,7 @@ def plot_alpha_persistence_timeline(
         mode="lines",
         line=dict(color=UP_COLOR, width=0.5),
         fill="tozeroy",
-        fillcolor="rgba(76,175,80,0.25)",
+        fillcolor=T.rgba(T.UP, 0.25),
         hovertemplate="Date: %{x|%d %b %Y}<br>Alpha: %{y:.2f}%<extra></extra>",
     ))
 
@@ -243,7 +247,7 @@ def plot_alpha_persistence_timeline(
         mode="lines",
         line=dict(color=DOWN_COLOR, width=0.5),
         fill="tozeroy",
-        fillcolor="rgba(244,67,54,0.25)",
+        fillcolor=T.rgba(T.DOWN, 0.25),
         hovertemplate="Date: %{x|%d %b %Y}<br>Alpha: %{y:.2f}%<extra></extra>",
     ))
 
@@ -258,7 +262,7 @@ def plot_alpha_persistence_timeline(
 
     # Zero line
     fig.add_hline(y=0, line_dash="dash",
-                  line_color="rgba(255,152,0,0.5)", line_width=1.2)
+                  line_color=T.rgba(T.WARN, 0.5), line_width=1.2)
 
     # Persistence annotation
     pct_positive = float((pct > 0).mean() * 100)
@@ -268,7 +272,7 @@ def plot_alpha_persistence_timeline(
         x=0.01, y=0.97,
         showarrow=False,
         font=dict(size=11, color=UP_COLOR if pct_positive >= 50 else DOWN_COLOR),
-        bgcolor="rgba(22,27,40,0.85)",
+        bgcolor=T.rgba(T.PANEL_HI, 0.85),
         borderpad=4,
     )
 
@@ -311,9 +315,8 @@ def plot_momentum_heatmap(
     MOMENTUM_COLS = {
         "momentum_3m":     "3M Return",
         "momentum_6m":     "6M Return",
-        "momentum_12m":    "12M Return",
+        "cagr_1y":         "1Y Return",
         "alpha_momentum":  "Alpha Mom.",
-        "momentum_sharpe": "Mom. Sharpe",
     }
 
     available = {k: v for k, v in MOMENTUM_COLS.items() if k in full_df.columns}
@@ -340,7 +343,7 @@ def plot_momentum_heatmap(
             else:
                 z_norm.loc[idx, col] = (raw - mn) / rng if rng != 0 else 0.5
                 # Format display
-                if col == "momentum_sharpe":
+                if col == "alpha_momentum":
                     z_text.loc[idx, col] = f"{raw:.2f}"
                 else:
                     z_text.loc[idx, col] = f"{raw*100:.1f}%"
@@ -350,7 +353,7 @@ def plot_momentum_heatmap(
 
     colorscale = [
         [0.00, "#b71c1c"], [0.30, "#e53935"],
-        [0.45, "#FF9800"], [0.55, "#FF9800"],
+        [0.45, T.INK_FAINT], [0.55, T.INK_FAINT],
         [0.70, "#66BB6A"], [1.00, "#2E7D32"],
     ]
 
@@ -372,7 +375,7 @@ def plot_momentum_heatmap(
                    font=dict(size=14, color="#E0E0E0")),
         height=max(height, 80 + 35 * len(sub)),
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(22,27,40,0.6)",
+        plot_bgcolor=T.GROUND,
         font=dict(color="#E0E0E0", size=10),
         margin=dict(l=220, r=20, t=55, b=80),
         xaxis=dict(tickfont=dict(size=10)),

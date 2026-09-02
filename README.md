@@ -39,54 +39,80 @@ An institutional-grade quantitative analytics dashboard for Indian mutual funds,
 
 ## 📂 Project Structure
 
-```
 mf_analytics/
 │
 ├── app.py                        Home page + global sidebar + TRI staleness note
 ├── requirements.txt
-├── runtime.txt                   Pinned Python version for Streamlit Cloud
-├── debug_connection.py           Run this first to check AMFI/mfapi connectivity
 │
 ├── .streamlit/
-│   └── config.toml               Dark theme configuration
+│   └── config.toml               Pitch-black theme, bundled webfonts, static serving.
+│                                 Repeats four colour tokens from utils/theme.py by
+│                                 necessity — Streamlit reads this before Python runs.
+│                                 test_design_system.py asserts they stay in step.
+│
+├── static/fonts/                 Archivo + IBM Plex Mono woff2, served locally.
+│                                 Bundled, not CDN: the app must not need the network
+│                                 for its typeface.
 │
 ├── utils/
-│   ├── constants.py               All config: categories, metric keys, colors, ANALYTICS_VERSION
-│   ├── formatters.py              Display formatting helpers
-│   └── session.py                 Versioned session-state key builders
+│   ├── theme.py                  Single source of truth for colour and type
+│   ├── ui.py                     Shared controls: rf_control, kpi, kpi_row, chart,
+│   │                             card, export_button, swatch
+│   ├── constants.py              Categories, metric keys, labels, help, ANALYTICS_VERSION
+│   ├── formatters.py             Display formatting helpers
+│   ├── validators.py             NAV series checks, coverage reports
+│   └── session.py                Versioned session-state key builders
 │
 ├── data/
-│   ├── fund_loader.py              mftool calls + direct API fallbacks
-│   ├── category_mapper.py          Keyword-based category detection
-│   ├── nav_processor.py            NAV cleaning, returns computation
-│   ├── benchmark_loader.py         TRI-first benchmark resolution, proxy fallback
-│   ├── tri_loader.py               Sole TRI integration bridge (data/tri/*.csv → NAV contract)
-│   └── factor_loader.py            4-factor and 6-factor return series construction
+│   ├── fund_loader.py            mftool + direct API fallback, parallel NAV loading
+│   ├── category_mapper.py        Keyword-based category detection
+│   ├── nav_processor.py          NAV cleaning, returns computation
+│   ├── benchmark_loader.py       TRI-first benchmark resolution, proxy fallback
+│   ├── tri_loader.py             Sole TRI bridge (data/tri/*.csv → NAV contract)
+│   ├── factor_loader.py          6-factor return series (Mkt/SMB/HML/WML/QMJ/BAB)
+│   └── tri/                      13 validated NSE TRI CSVs
 │
-├── indices/                       NSE TRI data ingestion package
-│   ├── config/                     Index registry, metadata, endpoints
-│   ├── data_ingestion/             Downloader, session/cookie handling, validators, cache
-│   └── utils/                      Logging
-│
-├── data/tri/                      Validated TRI CSVs (11 NSE indices)
+├── indices/                      NSE TRI ingestion package
+│   ├── config/                   Index registry, metadata, endpoints
+│   ├── data_ingestion/           Downloader, session/cookie handling, validators, cache
+│   └── utils/                    Logging
 │
 ├── scripts/
-│   └── update_indices.py           Refresh TRI data: python -m scripts.update_indices
+│   └── update_indices.py         Refresh TRI: python -m scripts.update_indices
 │
-├── analytics/                     Quantitative metrics engine (64 metrics)
-│   ├── engine.py                   Master orchestrator
+├── analytics/                    Metrics engine — 78 metric keys
+│   ├── engine.py                 Master orchestrator
 │   ├── performance.py / volatility.py / risk.py / risk_adjusted.py
 │   ├── consistency.py / distribution.py / stability.py / persistence.py
 │   ├── alpha.py / momentum.py / alpha_persistence.py
-│   ├── factor_model.py             4F (unchanged) + 6F (standardised betas, rolling, regime)
-│   ├── garch_model.py               GARCH(1,1) volatility forecasting
-│   ├── monte_carlo.py               Block-bootstrap scenario simulation
+│   ├── factor_model.py           6-factor: standardised betas, rolling alpha, regimes
+│   ├── uncertainty.py            Lo (2002) Sharpe standard errors, Newey-West serial-
+│   │                             correlation correction, indistinguishable_bands()
+│   ├── garch_model.py            GARCH(1,1) volatility forecasting
+│   ├── monte_carlo.py            Block-bootstrap scenario simulation
 │   └── quartile.py
 │
-├── visualizations/                 Plotly chart builders, dark theme
+├── visualizations/               Plotly chart builders on the shared theme
 │
-└── pages/                          Streamlit multi-page app (see table above)
-```
+├── pages/                        7 pages, numbered 1–7
+│
+└── tests/                        9 suites + runner
+    ├── run_all.py                python tests/run_all.py --fast  (skips the browser suite)
+    ├── test_analytics_regressions.py   Numeric correctness. The ONLY coverage of P99,
+    │                             DaR95, QMJ/BAB loadings, the D-06 intercept fix and
+    │                             calc_max_drawdown's _dd_series. Do not delete.
+    ├── test_uncertainty.py       Sharpe SE against closed form, ACF factor vs AR(1) theory
+    ├── test_design_system.py     Palette, contrast, type, emoji sweep
+    ├── test_pages_with_data.py   Every page driven WITH data, offline
+    ├── test_pages_render.py      Every page renders without a Streamlit exception
+    ├── test_rf_navigation.py     Real browser — AppTest cannot navigate between pages
+    ├── test_rf_control.py / test_parallel_load.py / test_visual_polish.py
+    ├── test_amfi_parse.py        AMFI schema fix, both field layouts
+    └── sitecustomize.py          Synthetic-fund stubs, gated on MF_STUB_DATA=1.
+                                  MUST stay here. Python auto-imports any module named
+                                  sitecustomize at interpreter startup, so at the repo
+                                  root one stray env var would have the real app
+                                  computing returns on synthetic funds.
 
 ---
 

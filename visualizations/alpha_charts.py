@@ -7,13 +7,14 @@ plot_fund_vs_benchmark: Updated to show % returns from period start (not rebased
 """
 
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from typing import Dict, Optional
 from visualizations._theme import (
     base_layout, empty_figure, get_color,
     UP_COLOR, DOWN_COLOR, NEUTRAL_COLOR,
 )
+from utils import theme as T
+from visualizations._theme import last_value_badges
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -33,21 +34,33 @@ def plot_fund_vs_benchmark(
     benchmark_name: str,
     period_label:   str = "All",
     height:         int = 440,
+    market_nav:     Optional[pd.Series] = None,
+    market_name:    str = "",
 ) -> go.Figure:
     """
-    Fund vs Benchmark — both lines start at 0% at the beginning of the
-    selected period. Gap between lines = alpha visually.
+    Fund vs its category benchmark, optionally with the broad market as a
+    third reference line.
+
+    All lines are rebased to 0% at the start of the selected period, so
+    vertical distance reads directly as relative performance. The shaded
+    area is fund-minus-category-benchmark — the SEBI comparison stays the
+    visual anchor; the market is context, drawn as a muted dashed line.
 
     Args:
         fund_nav:       Clean NAV series for the fund
-        benchmark_nav:  Clean NAV series for the benchmark
+        benchmark_nav:  Clean NAV series for the category benchmark
         fund_name:      Fund display name
-        benchmark_name: Benchmark display name (e.g. "Nifty 100 TRI")
+        benchmark_name: Category benchmark display name (e.g. "Nifty 100 TRI")
         period_label:   "1M","3M","6M","1Y","3Y","5Y","All"
         height:         Chart height in pixels
+        market_nav:     Optional broad-market NAV series (Nifty 500 TRI).
+                        Pass None when the category benchmark IS the market
+                        (Flexi/Multi/ELSS/Value/Contra/Focused) — plotting it
+                        twice would just draw the same line over itself.
+        market_name:    Market display name
 
     Returns:
-        go.Figure — both lines start at 0%, shaded gap area.
+        go.Figure — all lines start at 0%, shaded gap vs category benchmark.
     """
     if fund_nav is None or benchmark_nav is None:
         return empty_figure("Fund or benchmark NAV not available")
@@ -80,17 +93,23 @@ def plot_fund_vs_benchmark(
     f_pct = (f / f.iloc[0] - 1) * 100
     b_pct = (b / b.iloc[0] - 1) * 100
 
-    fig = go.Figure()
+    # Broad market, rebased onto the window the fund/benchmark pair already
+    # settled on. Reindexing (rather than re-intersecting) means a gap in the
+    # market series can never shorten the primary comparison.
+    m_pct = None
+    if market_nav is not None and market_name != benchmark_name:
+        m = market_nav.reindex(f_pct.index).dropna()
+        if len(m) >= 5:
+            m_pct = (m / m.iloc[0] - 1) * 100
 
-    # Shaded area between lines (fund - benchmark)
-    diff = f_pct.values - b_pct.reindex(f_pct.index).values
+    fig = go.Figure()
 
     # Benchmark line
     fig.add_trace(go.Scatter(
         x=b_pct.index, y=b_pct.values,
         name=benchmark_name,
         mode="lines",
-        line=dict(color="#FF9800", width=1.8, dash="dot"),
+        line=dict(color=T.WARN, width=1.8, dash="dot"),
         hovertemplate=(
             f"<b>{benchmark_name}</b><br>"
             "Date: %{x|%d %b %Y}<br>"
@@ -103,15 +122,31 @@ def plot_fund_vs_benchmark(
         x=f_pct.index, y=f_pct.values,
         name=fund_name,
         mode="lines",
-        line=dict(color="#2196F3", width=2),
+        line=dict(color=T.DATA_PRIMARY, width=2),
         fill="tonexty",
-        fillcolor="rgba(33,150,243,0.08)",
+        fillcolor=T.rgba(T.DATA_PRIMARY, 0.08),
         hovertemplate=(
             f"<b>{fund_name}</b><br>"
             "Date: %{x|%d %b %Y}<br>"
             "Return: %{y:+.2f}%<extra></extra>"
         ),
     ))
+
+    # Broad market — added LAST so the fund's fill="tonexty" still anchors to
+    # the category benchmark trace immediately before it. Muted and dashed:
+    # this is context, not the primary comparison.
+    if m_pct is not None:
+        fig.add_trace(go.Scatter(
+            x=m_pct.index, y=m_pct.values,
+            name=market_name,
+            mode="lines",
+            line=dict(color=NEUTRAL_COLOR, width=1.5, dash="dash"),
+            hovertemplate=(
+                f"<b>{market_name}</b><br>"
+                "Date: %{x|%d %b %Y}<br>"
+                "Return: %{y:+.2f}%<extra></extra>"
+            ),
+        ))
 
     # Zero baseline
     fig.add_hline(
@@ -122,16 +157,27 @@ def plot_fund_vs_benchmark(
         annotation_font_color="rgba(200,200,200,0.6)",
     )
 
-    # Outperformance annotation
+    # Outperformance annotation — one line per yardstick, so "+0.7%" is never
+    # ambiguous about which benchmark it refers to.
+    def _tag(value: float, label: str) -> str:
+        col  = UP_COLOR if value >= 0 else DOWN_COLOR
+        sign = "+" if value >= 0 else ""
+        return f"<span style='color:{col}'><b>{sign}{value:.1f}% vs {label}</b></span>"
+
     final_diff = float(f_pct.iloc[-1] - b_pct.reindex(f_pct.index).iloc[-1])
-    col  = UP_COLOR if final_diff >= 0 else DOWN_COLOR
-    sign = "+" if final_diff >= 0 else ""
+    lines = [_tag(final_diff, "category")] if m_pct is not None else \
+            [_tag(final_diff, "benchmark")]
+
+    if m_pct is not None:
+        final_mkt = float(f_pct.reindex(m_pct.index).iloc[-1] - m_pct.iloc[-1])
+        lines.append(_tag(final_mkt, "market"))
+
     fig.add_annotation(
-        text=f"<b>{sign}{final_diff:.1f}% vs benchmark</b>",
+        text="<br>".join(lines),
         xref="paper", yref="paper", x=0.99, y=0.99,
-        showarrow=False, xanchor="right",
-        font=dict(size=12, color=col),
-        bgcolor="rgba(22,27,40,0.85)", borderpad=4,
+        showarrow=False, xanchor="right", align="right",
+        font=dict(size=12),
+        bgcolor=T.rgba(T.PANEL_HI, 0.85), borderpad=4,
     )
 
     fig.update_layout(base_layout(
@@ -143,6 +189,8 @@ def plot_fund_vs_benchmark(
     fig.update_yaxes(ticksuffix="%", zeroline=True,
                      zerolinecolor="rgba(255,255,255,0.30)", zerolinewidth=1.2)
 
+    # Stamp each line's final value on the right axis in its own colour.
+    last_value_badges(fig)
     return fig
 
 
@@ -173,7 +221,7 @@ def plot_rolling_alpha(
         ))
 
     fig.add_hline(y=0, line_dash="dash",
-                  line_color="rgba(255,152,0,0.6)", line_width=1.5,
+                  line_color=T.rgba(T.WARN, 0.6), line_width=1.5,
                   annotation_text="0% Alpha", annotation_position="right",
                   annotation_font_color=NEUTRAL_COLOR, annotation_font_size=10)
 
@@ -211,8 +259,8 @@ def plot_capture_scatter(
     from utils.constants import QUARTILE_COLORS
     cap_q = "capture_ratio_quartile"
     colors = [
-        QUARTILE_COLORS.get(str(full_df.loc[n, cap_q]), "#2196F3")
-        if cap_q in full_df.columns and n in full_df.index else "#2196F3"
+        QUARTILE_COLORS.get(str(full_df.loc[n, cap_q]), T.DATA_PRIMARY)
+        if cap_q in full_df.columns and n in full_df.index else T.DATA_PRIMARY
         for n in plot_df.index
     ]
 
@@ -239,8 +287,8 @@ def plot_capture_scatter(
     y_max = float(y_vals.max()) * 1.08
 
     qs = dict(type="rect", xref="x", yref="y", line=dict(width=0))
-    fig.add_shape(**qs, x0=x_min, x1=x_mid, y0=y_mid, y1=y_max, fillcolor="rgba(76,175,80,0.06)")
-    fig.add_shape(**qs, x0=x_mid, x1=x_max, y0=y_min, y1=y_mid, fillcolor="rgba(244,67,54,0.06)")
+    fig.add_shape(**qs, x0=x_min, x1=x_mid, y0=y_mid, y1=y_max, fillcolor=T.rgba(T.UP, 0.06))
+    fig.add_shape(**qs, x0=x_mid, x1=x_max, y0=y_min, y1=y_mid, fillcolor=T.rgba(T.DOWN, 0.06))
     fig.add_shape(**qs, x0=x_min, x1=x_mid, y0=y_min, y1=y_mid, fillcolor="rgba(255,255,255,0.02)")
     fig.add_shape(**qs, x0=x_mid, x1=x_max, y0=y_mid, y1=y_max, fillcolor="rgba(255,255,255,0.02)")
 
@@ -275,46 +323,4 @@ def plot_capture_scatter(
 # CHART 4 — ALPHA COMPARISON BAR
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_alpha_comparison(
-    fund_metrics_dict: Dict[str, Dict],
-    height:            int = 420,
-) -> go.Figure:
-    if not fund_metrics_dict:
-        return empty_figure("No fund metrics provided")
 
-    SHOW = [
-        ("jensens_alpha",    "Jensen's Alpha",    True,  100),
-        ("information_ratio","Information Ratio", False, 1),
-        ("excess_return",    "Excess Return",     True,  100),
-        ("capture_ratio",    "Capture Ratio",     False, 1),
-    ]
-
-    fig = go.Figure()
-    for i, (name, metrics) in enumerate(fund_metrics_dict.items()):
-        if not metrics.get("is_valid"):
-            continue
-        values, labels = [], []
-        for key, label, is_pct, mult in SHOW:
-            val = metrics.get(key)
-            if val is not None and np.isfinite(val):
-                values.append(float(val) * mult)
-                labels.append(label)
-            else:
-                values.append(None)
-                labels.append(label)
-
-        fig.add_trace(go.Bar(
-            x=labels, y=values, name=name[:35],
-            marker_color=get_color(i), opacity=0.82,
-            hovertemplate=(
-                f"<b>{name[:40]}</b><br>%{{x}}: %{{y:.3f}}<extra></extra>"
-            ),
-        ))
-
-    fig.add_hline(y=0, line_dash="dot",
-                  line_color="rgba(255,255,255,0.2)", line_width=1)
-    fig.update_layout(base_layout(
-        title="Alpha Metrics Comparison", x_title="Metric",
-        y_title="Value", height=height, hovermode="x unified",
-    ), barmode="group")
-    return fig

@@ -29,9 +29,8 @@ Drawdown Duration:
 All metrics are most meaningful when computed over long histories (3+ years).
 """
 
-import numpy as np
 import pandas as pd
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,7 +73,8 @@ def calc_drawdown_series(nav: Optional[pd.Series]) -> Optional[pd.Series]:
 # MAXIMUM DRAWDOWN
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calc_max_drawdown(nav: Optional[pd.Series]) -> Optional[float]:
+def calc_max_drawdown(nav: Optional[pd.Series],
+                      _dd_series: Optional[pd.Series] = None) -> Optional[float]:
     """
     Maximum Drawdown — the worst peak-to-trough decline in the NAV history.
 
@@ -88,7 +88,11 @@ def calc_max_drawdown(nav: Optional[pd.Series]) -> Optional[float]:
         Maximum drawdown as a negative decimal (e.g. -0.35), or None.
         Returns 0.0 if the fund never declined below its starting NAV.
     """
-    dd_series = calc_drawdown_series(nav)
+    # _dd_series lets calc_all_risk pass in the series it has already built,
+    # so a full metrics run computes the expanding max once instead of thrice.
+    # It is a private optimisation, not part of the public contract: callers
+    # that omit it get exactly the old behaviour.
+    dd_series = calc_drawdown_series(nav) if _dd_series is None else _dd_series
     if dd_series is None:
         return None
 
@@ -99,7 +103,8 @@ def calc_max_drawdown(nav: Optional[pd.Series]) -> Optional[float]:
 # AVERAGE DRAWDOWN
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calc_avg_drawdown(nav: Optional[pd.Series]) -> Optional[float]:
+def calc_avg_drawdown(nav: Optional[pd.Series],
+                      _dd_series: Optional[pd.Series] = None) -> Optional[float]:
     """
     Average Drawdown — mean depth across all days spent below a prior peak.
 
@@ -116,7 +121,7 @@ def calc_avg_drawdown(nav: Optional[pd.Series]) -> Optional[float]:
         Average drawdown as a negative decimal, or None.
         Returns 0.0 if the fund was always at or above its peak.
     """
-    dd_series = calc_drawdown_series(nav)
+    dd_series = calc_drawdown_series(nav) if _dd_series is None else _dd_series
     if dd_series is None:
         return None
 
@@ -189,78 +194,6 @@ def calc_drawdown_duration(nav: Optional[pd.Series]) -> Optional[int]:
 # DRAWDOWN PERIODS TABLE (for the Drawdown Chart)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calc_drawdown_periods(
-    nav: Optional[pd.Series],
-    top_n: int = 5,
-) -> Optional[pd.DataFrame]:
-    """
-    Identify the top N worst drawdown events with start/end/recovery dates.
-
-    Used to generate the annotated Drawdown Chart in visualizations.
-
-    Args:
-        nav:   Clean daily NAV series
-        top_n: Number of worst events to return
-
-    Returns:
-        DataFrame with columns:
-            start_date, trough_date, end_date (recovery or None if ongoing),
-            max_drawdown (negative decimal),
-            duration_days
-        Sorted by max_drawdown (worst first).
-    """
-    dd_series = calc_drawdown_series(nav)
-    if dd_series is None:
-        return None
-
-    records = []
-    in_dd = False
-    start_date = None
-    trough_dd = 0.0
-    trough_date = None
-
-    for date, val in dd_series.items():
-        if val < 0 and not in_dd:
-            # Drawdown starts
-            in_dd = True
-            start_date = date
-            trough_dd = val
-            trough_date = date
-
-        elif val < 0 and in_dd:
-            # Update trough
-            if val < trough_dd:
-                trough_dd = val
-                trough_date = date
-
-        elif val >= 0 and in_dd:
-            # Recovery
-            in_dd = False
-            records.append({
-                "start_date":    start_date,
-                "trough_date":   trough_date,
-                "end_date":      date,
-                "max_drawdown":  trough_dd,
-                "duration_days": (date - start_date).days,
-            })
-
-    # Still in drawdown at series end
-    if in_dd and start_date is not None:
-        records.append({
-            "start_date":    start_date,
-            "trough_date":   trough_date,
-            "end_date":      None,
-            "max_drawdown":  trough_dd,
-            "duration_days": (dd_series.index[-1] - start_date).days,
-        })
-
-    if not records:
-        return None
-
-    df = pd.DataFrame(records)
-    df = df.sort_values("max_drawdown").head(top_n)
-    return df.reset_index(drop=True)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BATCH COMPUTATION
@@ -293,11 +226,12 @@ def calc_all_risk(nav: Optional[pd.Series]) -> Dict[str, Optional[float]]:
             "drawdown_series":   None,
         }
 
-    # Reuse dd_series for all three metrics — no recomputation
-    mdd = float(dd_series.min())
-
-    in_dd = dd_series[dd_series < 0]
-    avg_dd = float(in_dd.mean()) if len(in_dd) > 0 else 0.0
+    # Delegate to the single-metric functions rather than re-deriving the
+    # arithmetic here. This aggregator used to inline both, which left
+    # calc_max_drawdown/calc_avg_drawdown unreferenced and free to drift out
+    # of agreement with the numbers the app actually displays.
+    mdd    = calc_max_drawdown(nav, _dd_series=dd_series)
+    avg_dd = calc_avg_drawdown(nav, _dd_series=dd_series)
 
     # Duration requires the original nav for the DatetimeIndex
     duration = calc_drawdown_duration(nav)

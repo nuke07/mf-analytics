@@ -4,7 +4,7 @@ data/factor_loader.py
 Constructs factor return series for Fama-French style models.
 
 Two public functions:
-    get_factor_returns(rf_rate)     → 4-factor model (used by engine.py)
+    get_factor_returns_6f(rf_rate)     → 4-factor model (used by engine.py)
     get_factor_returns_6f(rf_rate)  → 6-factor model (used by Factor Attribution page)
 
 Factor definitions:
@@ -26,9 +26,9 @@ QMJ or BAB, get_factor_returns_6f() returns None.
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 from typing import Optional, Dict, List, Tuple
 import logging
+from utils import theme as T
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +45,18 @@ FACTOR_DISPLAY_NAMES: Dict[str, str] = {
     "bab":    "Low Vol (BAB)",
 }
 
+# One colour per factor, drawn from the shared series palette so a factor's
+# colour in the attribution chart is the same colour it has everywhere else.
+# Deliberately no green or red here: HML being green would read as "value is
+# the good factor" rather than as a neutral identity.
 FACTOR_COLORS: Dict[str, str] = {
-    "market": "#2196F3",
-    "smb":    "#FF9800",
-    "hml":    "#4CAF50",
-    "wml":    "#9C27B0",
-    "qmj":    "#F44336",
-    "bab":    "#00BCD4",
-    "alpha":  "#FFEB3B",
+    "market": T.CHART_SERIES[0],   # cyan
+    "smb":    T.CHART_SERIES[1],   # ember
+    "hml":    T.CHART_SERIES[2],   # violet
+    "wml":    T.CHART_SERIES[3],   # steel
+    "qmj":    T.CHART_SERIES[4],   # magenta
+    "bab":    T.CHART_SERIES[7],   # slate
+    "alpha":  T.INK,               # alpha is the residual, not a factor
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,71 +183,6 @@ def _compute_spread(
 # PUBLIC: 4-FACTOR MODEL (used by engine.py — unchanged interface)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_factor_returns(
-    rf_rate: float = 0.065,
-) -> Tuple[Optional[pd.DataFrame], Dict[str, Optional[str]]]:
-    """
-    Construct daily factor returns for the 4-factor Fama-French-Carhart model.
-    TRI-first with proxy fallback for all four factors.
-
-    Returns:
-        (factor_df, proxy_names)
-        factor_df columns: market, smb, hml, wml
-    """
-    from data.nav_processor import compute_daily_returns
-
-    rf_daily     = rf_rate / 252
-    proxy_names: Dict[str, Optional[str]] = {}
-
-    # ── Market ──────────────────────────────────────────────────────────────
-    market_nav = _load_component("NIFTY 500", proxy_role="market")
-    proxy_names["market"] = "TRI" if _load_tri_nav_series("NIFTY 500") is not None else \
-        (_find_proxy_scheme("market") or {}).get("name")
-
-    # ── SMB components ──────────────────────────────────────────────────────
-    small_nav = _load_component("NIFTY SMALLCAP 250", proxy_role="small")
-    large_nav = _load_component("NIFTY 100",          proxy_role="large")
-
-    # ── HML / WML components ────────────────────────────────────────────────
-    value_nav    = _load_component("NIFTY500 VALUE 50",     proxy_role="value")
-    momentum_nav = _load_component("NIFTY200 MOMENTUM 30",  proxy_role="momentum")
-
-    factor_series: Dict[str, pd.Series] = {}
-
-    # Market = Nifty500 return − rf
-    if market_nav is not None:
-        mkt_ret = compute_daily_returns(market_nav)
-        factor_series["market"] = mkt_ret - rf_daily
-
-    # SMB = Smallcap250 − Nifty100
-    if small_nav is not None and large_nav is not None:
-        smb = _compute_spread(small_nav, large_nav)
-        if smb is not None:
-            factor_series["smb"] = smb
-
-    # HML = Value50 − Nifty500
-    if value_nav is not None and market_nav is not None:
-        hml = _compute_spread(value_nav, market_nav)
-        if hml is not None:
-            factor_series["hml"] = hml
-
-    # WML = Momentum30 − Nifty500
-    if momentum_nav is not None and market_nav is not None:
-        wml = _compute_spread(momentum_nav, market_nav)
-        if wml is not None:
-            factor_series["wml"] = wml
-
-    if not factor_series:
-        return None, proxy_names
-
-    factor_df = pd.DataFrame(factor_series).dropna(how="all")
-    if len(factor_df) < 60:
-        return None, proxy_names
-
-    logger.info(f"4F returns: {list(factor_df.columns)}, {len(factor_df)} days")
-    return factor_df, proxy_names
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC: 6-FACTOR MODEL (used by Factor Attribution page)
@@ -345,13 +284,6 @@ def get_factor_returns_6f(
 # ─────────────────────────────────────────────────────────────────────────────
 # AVAILABILITY CHECKS (used by UI)
 # ─────────────────────────────────────────────────────────────────────────────
-
-def get_factor_availability() -> Dict[str, bool]:
-    """Which 4F factors are available. Used in Fund Analytics Factor tab."""
-    factor_df, _ = get_factor_returns()
-    if factor_df is None:
-        return {f: False for f in ["market", "smb", "hml", "wml"]}
-    return {f: f in factor_df.columns for f in ["market", "smb", "hml", "wml"]}
 
 
 def get_factor_availability_6f() -> Dict[str, bool]:

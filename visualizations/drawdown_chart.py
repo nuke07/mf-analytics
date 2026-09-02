@@ -26,13 +26,13 @@ Usage:
 """
 
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from typing import Dict, Optional, List
 from visualizations._theme import (
     base_layout, empty_figure, get_color,
     DOWN_COLOR, NEUTRAL_COLOR, ZERO_LINE_COLOR,
 )
+from utils import theme as T
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ def plot_drawdown(
                     mode          = "lines",
                     line          = dict(color=DOWN_COLOR, width=1.5),
                     fill          = "tozeroy",
-                    fillcolor     = "rgba(244,67,54,0.20)",
+                    fillcolor     = T.rgba(T.DOWN, 0.20),
                     hovertemplate = (
                         "Date: %{x|%d %b %Y}<br>"
                         "Drawdown: %{y:.2f}%"
@@ -199,7 +199,7 @@ def _annotate_worst_drawdowns(
                 ax         = 0,
                 ay         = 30,   # Push label upward (positive = up in screen coords)
                 font       = dict(color=DOWN_COLOR, size=10),
-                bgcolor    = "rgba(22,27,40,0.85)",
+                bgcolor    = T.rgba(T.PANEL_HI, 0.85),
                 borderpad  = 3,
             )
     except Exception:
@@ -210,57 +210,4 @@ def _annotate_worst_drawdowns(
 # UNDERWATER CHART (alternative view)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_drawdown_periods(
-    drawdown_dict: Dict[str, Optional[pd.Series]],
-    height:        int = 300,
-) -> go.Figure:
-    """
-    Stacked bar chart showing how many funds were in drawdown on each date.
-    Used on the Category Explorer page to show category-wide stress periods.
 
-    Args:
-        drawdown_dict: {fund_name: drawdown_series}
-        height:        Chart height
-
-    Returns:
-        go.Figure showing % of funds in drawdown over time (daily)
-    """
-    valid = {k: v for k, v in drawdown_dict.items() if v is not None and len(v) > 0}
-    if not valid:
-        return empty_figure("No drawdown data")
-
-    # Align all series to common dates
-    df = pd.DataFrame(valid)
-    df = df.dropna(how="all")
-
-    # Fraction of funds in drawdown (DD < 0) at each date
-    in_dd = (df < 0).sum(axis=1) / df.shape[1] * 100
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x             = in_dd.index,
-            y             = in_dd.values,
-            fill          = "tozeroy",
-            fillcolor     = "rgba(244,67,54,0.25)",
-            line          = dict(color=DOWN_COLOR, width=1),
-            name          = "% Funds in Drawdown",
-            hovertemplate = (
-                "Date: %{x|%d %b %Y}<br>"
-                "Funds in Drawdown: %{y:.0f}%"
-                "<extra></extra>"
-            ),
-        )
-    )
-
-    fig.update_layout(
-        base_layout(
-            title   = "Category Drawdown Exposure (% of Funds Underwater)",
-            x_title = "Date",
-            y_title = "% in Drawdown",
-            height  = height,
-            legend  = False,
-        )
-    )
-    fig.update_yaxes(ticksuffix="%", range=[0, 105])
-    return fig

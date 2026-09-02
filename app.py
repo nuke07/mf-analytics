@@ -14,14 +14,20 @@ Phase D change: 1_Dashboard.py and 2_Category_Explorer.py removed.
 """
 
 import streamlit as st
-import pandas as pd
 import plotly.graph_objects as go
 
 from data.fund_loader     import get_all_schemes
 from data.category_mapper import get_category_fund_counts
 from utils.constants      import (
-    APP_TITLE, APP_ICON, APP_SUBTITLE, APP_VERSION, CATEGORIES,
+    APP_TITLE, APP_ICON, APP_SUBTITLE, CATEGORIES,
 )
+from utils.ui          import (
+    sidebar_header, plan_selector, rf_control, tri_status,
+    sidebar_footer, render_refresh_button,
+    chart,
+    card, card_title, card_stat, card_body,
+)
+from utils import theme as T
 
 st.set_page_config(
     page_title            = f"{APP_TITLE}",
@@ -34,76 +40,27 @@ st.set_page_config(
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title(f"{APP_ICON} {APP_TITLE}")
-    st.caption(APP_SUBTITLE)
-    st.divider()
+    # The subtitle belongs to the hero, not the sidebar; showing it in both
+    # put the same sentence on screen twice.
+    sidebar_header()
 
-    col_rf, col_down, col_up = st.columns([3, 1, 1])
-    rf_pct = st.slider(
-        "Risk-Free Rate (%)",
-        min_value = 4.0,
-        max_value = 9.0,
-        value     = st.session_state.get("rf_rate", 7.0),
-        step      = 0.1,
-        help      = "Used for Sharpe & Sortino.",
-    )
-    
-    if col_down.button("−", key=f"rf_down_{__file__}"):
-        rf_pct = max(4.0, round(rf_pct - 0.1, 1))
-        st.session_state["rf_rate"] = rf_pct
-        st.rerun()
-    if col_up.button("+", key=f"rf_up_{__file__}"):
-        rf_pct = min(9.0, round(rf_pct + 0.1, 1))
-        st.session_state["rf_rate"] = rf_pct
-        st.rerun()
-    st.session_state["rf_rate"] = rf_pct
+    rf_pct, rf_rate = rf_control()
 
-    plan_type = st.radio(
-        "Plan Universe",
-        options    = ["Direct", "Regular"],
-        index      = 0 if st.session_state.get("plan_type", "Direct") == "Direct" else 1,
-        horizontal = True,
-        help       = "Direct: no distributor commission. Regular: distributor-advised. Never mix both.",
-    )
-    st.session_state["plan_type"] = plan_type
+    plan_type = plan_selector()
 
     st.divider()
-    from utils.session import render_refresh_button
     render_refresh_button()
 
-    from data.tri_loader import get_tri_nav, get_tri_staleness_warning, is_tri_available
-    st.divider()
-    st.markdown("**📡 Benchmark Data**")
-    for idx_name, label in [
-        ("NIFTY 500",        "Nifty 500"),
-        ("NIFTY 100",        "Nifty 100"),
-        ("NIFTY MIDCAP 150", "Midcap 150"),
-        ("NIFTY SMALLCAP 250", "Smallcap 250"),
-        ("NIFTY 50",         "Nifty 50"),
-    ]:
-        if is_tri_available(idx_name):
-            nav = get_tri_nav(idx_name)
-            warning = get_tri_staleness_warning(idx_name)
-            last_date = nav.index[-1].strftime("%d %b %Y") if nav is not None else "?"
-            if warning:
-                st.warning(f"{label}: {last_date} ⚠️", icon="⚠️")
-            else:
-                st.caption(f"✅ {label}: {last_date}")
-        else:
-            st.caption(f"🔄 {label}: proxy")
+    tri_status()
 
-    st.caption(
-        f"NAV sourced from AMFI via mfapi.in\n"
-        f"Updates once daily after 8 PM IST\n"
-        f"v{APP_VERSION}"
-    )
+    sidebar_footer()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HERO HEADER
 # ─────────────────────────────────────────────────────────────────────────────
-st.title(f"{APP_ICON}  {APP_TITLE}")
+st.title(APP_TITLE)
 st.markdown(
-    f"<p style='font-size:1.1em; color:#78909C;'>{APP_SUBTITLE}</p>",
+    f"<p style='font-size:1.05em; color:{T.INK_DIM};'>{APP_SUBTITLE}</p>",
     unsafe_allow_html=True,
 )
 st.divider()
@@ -118,7 +75,7 @@ with st.spinner("Loading scheme registry…"):
 
 if not all_schemes:
     st.error(
-        "❌ Unable to load mutual fund data.\n\n"
+        "Unable to load mutual fund data.\n\n"
         "**Steps to fix:**\n"
         "1. Open Anaconda Prompt\n"
         "2. Run `python debug_connection.py`\n"
@@ -144,39 +101,25 @@ st.divider()
 # ─────────────────────────────────────────────────────────────────────────────
 left, right = st.columns([1.1, 0.9], gap="large")
 
-ICONS = {
-    "Large Cap": "🏛️",   "Mid Cap": "🏢",           "Small Cap": "🏗️",
-    "Flexi Cap": "🔄",   "Multi Cap": "🗂️",          "ELSS": "💰",
-    "Value": "🔍",       "Contra": "↩️",             "Focused": "🎯",
-    "Aggressive Hybrid": "⚖️", "Balanced Advantage": "🧮", "Index Funds": "📈",
-}
+# The per-category pictographs are gone: a building emoji beside "Large Cap"
+# told the reader nothing the words did not already say, and twelve of them
+# in a grid read as a consumer app. The card carries the name and the count.
 
 with left:
-    st.subheader("📂 Fund Counts by Category")
+    st.subheader("Fund Counts by Category")
     st.caption(f"**{plan_type} plans** · Growth only · ETFs, FoFs, Dividend/IDCW excluded.")
     card_cols = st.columns(3)
     for i, cat in enumerate(CATEGORIES):
         n    = counts.get(cat, 0)
-        icon = ICONS.get(cat, "📁")
-        with card_cols[i % 3]:
-            st.markdown(
-                f"""
-                <div style="
-                    background:rgba(33,150,243,0.07);
-                    border:1px solid rgba(33,150,243,0.2);
-                    border-radius:8px; padding:12px 14px; margin-bottom:10px;
-                ">
-                    <div style="font-size:1.4em">{icon}</div>
-                    <div style="font-weight:600;font-size:0.88em;margin:4px 0 2px">{cat}</div>
-                    <div style="font-size:1.5em;font-weight:700;color:#2196F3">{n}</div>
-                    <div style="font-size:0.72em;color:#78909C">funds</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        card(
+            card_title(cat) + card_stat(str(n), "funds"),
+            container = card_cols[i % 3],
+            tone      = "accent",
+            min_height= 74,
+        )
 
 with right:
-    st.subheader("📊 Distribution")
+    st.subheader("Distribution")
     sorted_cats = sorted(counts.items(), key=lambda x: x[1], reverse=True)
     cats, ns    = zip(*sorted_cats) if sorted_cats else ([], [])
     max_n       = max(ns) if ns else 1
@@ -184,68 +127,65 @@ with right:
     fig = go.Figure(go.Bar(
         x=ns, y=cats, orientation="h",
         marker=dict(
-            color=[f"rgba(33,150,243,{0.35 + 0.65*(v/max_n):.2f})" for v in ns],
-            line=dict(color="rgba(33,150,243,0.7)", width=1),
+            color=[T.rgba(T.DATA_PRIMARY, round(0.35 + 0.65 * (v / max_n), 2)) for v in ns],
+            line=dict(color=T.rgba(T.DATA_PRIMARY, 0.7), width=1),
         ),
         text=[str(v) for v in ns], textposition="outside",
         hovertemplate="%{y}: %{x} funds<extra></extra>",
     ))
     fig.update_layout(
         height=420, paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(22,27,40,0.5)",
-        font=dict(color="#E0E0E0", size=11),
+        plot_bgcolor=T.GROUND,
+        font=dict(color=T.INK, family=T.PLOTLY_MONO, size=11),
         margin=dict(l=130, r=55, t=20, b=30),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.07)", title="Number of Funds"),
+        xaxis=dict(gridcolor=T.rgba(T.INK, 0.07), title="Number of Funds"),
         yaxis=dict(autorange="reversed"), showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    chart(fig)
 
 st.divider()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NAVIGATION GUIDE
 # ─────────────────────────────────────────────────────────────────────────────
-st.subheader("🗺️ Navigation Guide")
-c1, c2, c3, c4 = st.columns(4)
+st.subheader("Navigation Guide")
 
+# All seven pages, grouped the way the sidebar now orders them. This list
+# used to name only four, so Portfolio Analytics, Predictive Analytics and
+# Factor Attribution were undiscoverable from the home page.
 nav_items = [
-    (
-        "📋", "Fund Analytics",
-        "Select any fund for a deep dive — all 64 metrics across performance, "
-        "risk, alpha, momentum, and factor model. 5 chart tabs included.",
-    ),
-    (
-        "⚖️", "Fund Comparison",
-        "Compare 2–5 funds side by side using Value Research-style trailing "
-        "returns charts. Period selector: 1M to All.",
-    ),
-    (
-        "🏆", "Rankings",
-        "Category-wide ranking tables across 10 metric groups. "
-        "Includes full quartile view (Q1–Q4) for all funds and all metrics. "
-        "CSV export on every table.",
-    ),
-    (
-        "🔬", "Data Quality",
-        "Check NAV history length, missing data gaps, and metric "
-        "coverage per fund before running analytics.",
-    ),
+    ("1 · Fund Analytics",
+     "Deep dive on a single fund — every metric, charts, alpha against both "
+     "its category benchmark and the broad market, and the 6-factor model."),
+    ("2 · Fund Comparison",
+     "Two to five funds side by side: trailing returns rebased to 0%, "
+     "drawdowns, rolling-return distributions, and a metrics table."),
+    ("3 · Rankings",
+     "Category-wide league tables across six groups — returns, risk, "
+     "rolling & hit rate, alpha & factors, vs broad market, and quartiles. "
+     "CSV export on every table."),
+    ("4 · Portfolio Analytics",
+     "Build up to two portfolios of eight funds each and compare them under "
+     "identical rebalancing and period settings."),
+    ("5 · Factor Attribution",
+     "Where a fund's return actually came from: market, size, value, "
+     "momentum, quality and low-volatility exposure — and what is left as "
+     "alpha, including how the tilts shift across bull and bear regimes."),
+    ("6 · Predictive Analytics",
+     "Risk forecasting, not return prediction. GARCH volatility, "
+     "block-bootstrap Monte Carlo, and drawdown-at-risk."),
+    ("7 · Data Quality",
+     "NAV history length, gaps, and per-metric coverage — worth checking "
+     "before trusting a category's rankings."),
 ]
 
-for col, (icon, title, desc) in zip([c1, c2, c3, c4], nav_items):
-    col.markdown(
-        f"""
-        <div style="
-            background:rgba(255,255,255,0.04);
-            border:1px solid rgba(255,255,255,0.08);
-            border-radius:8px; padding:16px; min-height:160px;
-        ">
-            <div style="font-size:1.6em">{icon}</div>
-            <div style="font-weight:700; font-size:0.95em; margin:8px 0 6px">{title}</div>
-            <div style="font-size:0.80em; color:#90A4AE; line-height:1.5">{desc}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+_nav_cols = st.columns(4)
+for _i, (title, desc) in enumerate(nav_items):
+    col = _nav_cols[_i % 4]
+    card(
+        card_title(title) + card_body(desc),
+        container  = col,
+        min_height = 168,
     )
 
 st.divider()
@@ -254,5 +194,4 @@ st.info(
     "It does not provide investment recommendations, ratings, or advice.  "
     "All rankings and metrics are computed within a single category — "
     "cross-category comparisons are not supported by design.",
-    icon="ℹ️",
 )

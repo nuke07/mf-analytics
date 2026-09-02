@@ -14,12 +14,13 @@ Betas are STANDARDISED (zero mean, unit variance per factor) so
 comparisons across factors and funds are directly meaningful.
 
 Four tabs:
-    📐 Factor Loadings       — betas + significance, model quality
-    📈 Rolling Exposures     — 2×3 grid of rolling betas over time
-    🧩 Return Attribution    — stacked bar: contribution per factor
-    🔄 Regime Analysis       — betas estimated in Bull/Sideways/Bear
+    Factor Loadings       — betas + significance, model quality
+    Rolling Exposures     — 2×3 grid of rolling betas over time
+    Return Attribution    — stacked bar: contribution per factor
+    Regime Analysis       — betas estimated in Bull/Sideways/Bear
 """
 
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -39,9 +40,15 @@ from analytics.factor_model import (
     calc_regime_betas,
 )
 from visualizations._theme import get_color
-from utils.constants  import CATEGORIES, APP_TITLE, APP_ICON
-from utils.formatters import fmt_pct, fmt_ratio
-from utils.session    import render_refresh_button
+from utils.formatters import fmt_pct
+from utils.ui          import (
+    sidebar_header, plan_selector, rf_control, tri_status,
+    render_refresh_button, fund_slot_row, duplicate_funds, stale_result_notice, SLOT_COLORS,
+    chart,
+    export_button,
+    card, card_body,
+)
+from utils import theme as T
 
 st.set_page_config(
     page_title = "Factor Attribution — MF Analytics",
@@ -57,8 +64,8 @@ FACTOR_ORDER = ["market", "smb", "hml", "wml", "qmj", "bab"]
 
 _DARK_LAYOUT = dict(
     paper_bgcolor = "rgba(0,0,0,0)",
-    plot_bgcolor  = "rgba(22,27,40,0.5)",
-    font          = dict(color="#E0E0E0", size=11),
+    plot_bgcolor  = T.GROUND,
+    font          = dict(color=T.INK, family=T.PLOTLY_SANS, size=11),
 )
 _GRID = dict(gridcolor="rgba(255,255,255,0.07)", showgrid=True)
 _ZERO = dict(zeroline=True, zerolinecolor="rgba(255,255,255,0.35)", zerolinewidth=1)
@@ -95,35 +102,6 @@ def _fmt_beta(beta, tstat):
     s = _sig(tstat)
     return f"{beta:+.3f}{s}"
 
-
-def _fund_slot(slot_idx, all_cat, color):
-    """Render one fund selection row. Returns dict or None."""
-    c_label, c_cat, c_fund = st.columns([0.5, 2, 4])
-    c_label.markdown(
-        f"<div style='padding-top:8px;font-weight:700;color:{color}'>"
-        f"Fund {slot_idx}</div>",
-        unsafe_allow_html=True,
-    )
-    cat = c_cat.selectbox(
-        "c", ["—"] + CATEGORIES,
-        key=f"fa_cat_{slot_idx}", label_visibility="collapsed",
-    )
-    if cat == "—":
-        c_fund.selectbox(
-            "f", ["—"], key=f"fa_fund_{slot_idx}",
-            disabled=True, label_visibility="collapsed",
-        )
-        return None
-    fund_list = all_cat.get(cat, [])
-    fund_opts = [f["name"] for f in fund_list]
-    fund_map  = {f["name"]: f["code"] for f in fund_list}
-    fund_sel  = c_fund.selectbox(
-        "f", ["—"] + fund_opts,
-        key=f"fa_fund_{slot_idx}", label_visibility="collapsed",
-    )
-    if fund_sel == "—":
-        return None
-    return {"name": fund_sel, "code": fund_map[fund_sel], "category": cat}
 
 
 def _plot_rolling_grid(funds_data, period_label, window_label):
@@ -166,11 +144,11 @@ def _plot_rolling_grid(funds_data, period_label, window_label):
         height  = 600,
         title   = dict(
             text = f"Rolling {window_label} Standardised Factor Betas",
-            font = dict(size=14, color="#E0E0E0"),
+            font = dict(size=14, color=T.INK),
         ),
         legend  = dict(
             orientation="h", y=-0.06,
-            font=dict(color="#E0E0E0", size=10),
+            font=dict(color=T.INK, family=T.PLOTLY_MONO, size=10),
         ),
     )
     return fig
@@ -192,7 +170,7 @@ def _plot_attribution(funds_data):
             x_vals.append((val or 0) * 100)
 
         label = FACTOR_DISPLAY_NAMES.get(fkey, "Alpha (6F)")
-        color = FACTOR_COLORS.get(fkey, "#FFEB3B")
+        color = FACTOR_COLORS.get(fkey, T.DATA_PRIMARY)
         fig.add_trace(go.Bar(
             y             = short_names,
             x             = x_vals,
@@ -209,13 +187,13 @@ def _plot_attribution(funds_data):
         height  = max(320, 130 * len(fund_names)),
         title   = dict(
             text = "Annualised Return Attribution by Factor",
-            font = dict(size=14, color="#E0E0E0"),
+            font = dict(size=14, color=T.INK),
         ),
         xaxis  = dict(title="Annualised Contribution (%)", ticksuffix="%",
                       **_GRID),
         yaxis  = dict(**_GRID),
         legend = dict(orientation="h", y=-0.15,
-                      font=dict(color="#E0E0E0", size=10)),
+                      font=dict(color=T.INK, family=T.PLOTLY_MONO, size=10)),
     )
     return fig
 
@@ -243,34 +221,14 @@ def _regime_table(regime_data, factor_order):
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title(f"{APP_ICON} {APP_TITLE}")
-    st.divider()
+    sidebar_header()
 
-    plan_type = st.radio(
-        "Plan Universe", ["Direct", "Regular"],
-        index=0 if st.session_state.get("plan_type", "Direct") == "Direct" else 1,
-        horizontal=True,
-    )
-    st.session_state["plan_type"] = plan_type
+    plan_type = plan_selector()
 
     st.divider()
 
     # RF rate with fine increment buttons
-    rf_col, rd_col, ru_col = st.columns([3, 1, 1])
-    rf_pct = rf_col.slider(
-        "Risk-Free Rate (%)", 4.0, 9.0,
-        st.session_state.get("rf_rate", 6.5), 0.1,
-    )
-    if rd_col.button("−", key="fa_rf_down"):
-        rf_pct = max(4.0, round(rf_pct - 0.1, 1))
-        st.session_state["rf_rate"] = rf_pct
-        st.rerun()
-    if ru_col.button("+", key="fa_rf_up"):
-        rf_pct = min(9.0, round(rf_pct + 0.1, 1))
-        st.session_state["rf_rate"] = rf_pct
-        st.rerun()
-    rf_rate = rf_pct / 100
-    st.session_state["rf_rate"] = rf_pct
+    rf_pct, rf_rate = rf_control()
 
     st.divider()
 
@@ -289,13 +247,13 @@ with st.sidebar:
         index=3, horizontal=True, label_visibility="collapsed",
     )
 
-    st.divider()
     render_refresh_button()
+    tri_status()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────────────────────────────────────
-st.title("🔬 Factor Attribution")
+st.title("Factor Attribution")
 st.caption(
     "6-factor model: Market · Size (SMB) · Value (HML) · Momentum (WML) "
     "· Quality (QMJ) · Low Vol (BAB). "
@@ -307,27 +265,27 @@ st.divider()
 # ─────────────────────────────────────────────────────────────────────────────
 # FUND SELECTION
 # ─────────────────────────────────────────────────────────────────────────────
-st.subheader("📂 Fund Selection")
+st.subheader("Fund Selection")
 st.caption("Select up to 3 funds across any category.")
 
 with st.spinner("Loading fund universe…"):
     all_cat = get_all_categorized_schemes(plan_type=plan_type)
 
-SLOT_COLORS = ["#2196F3", "#FF9800", "#4CAF50"]
 selected_funds = []
 for i in range(1, 4):
-    slot = _fund_slot(i, all_cat, SLOT_COLORS[i - 1])
+    slot = fund_slot_row(i, all_cat, prefix='fa',
+                         color=SLOT_COLORS[i - 1], ratios=(0.5, 2, 4))
     if slot:
         selected_funds.append(slot)
 
 n_funds = len(selected_funds)
 if n_funds == 0:
-    st.info("Select at least 1 fund to run attribution.", icon="ℹ️")
+    st.info("Select at least 1 fund to run attribution.")
 elif n_funds == 1:
-    st.caption(f"✅ 1 fund selected — single-fund analysis mode.")
+    st.caption(f"✓ 1 fund selected — single-fund analysis mode.")
 else:
     names = [f["name"][:40] for f in selected_funds]
-    st.caption(f"✅ {n_funds} funds selected — comparison mode.")
+    st.caption(f"✓ {n_funds} funds selected — comparison mode.")
 
 st.divider()
 
@@ -338,12 +296,22 @@ fa_sig = (
     str([f["code"] for f in selected_funds]) +
     str(rf_pct) + str(window_days)
 )
-if st.session_state.get("_fa_sig") != fa_sig:
-    st.session_state.pop("_fa_result", None)
+# Results are KEPT when the selection changes — only flagged as stale. This
+# used to pop the cached result, so nudging any control blanked the page and
+# threw away the whole run.
+_fa_stale = ("_fa_result" in st.session_state
+             and st.session_state.get("_fa_sig") != fa_sig)
+
+_dupes = duplicate_funds(selected_funds)
+if _dupes:
+    st.warning(
+        f"**{_dupes[0]}** is selected in more than one slot. Comparing a fund "
+        "with itself produces identical columns — pick a different fund.",
+    )
 
 run_btn = st.button(
-    "⚡ Run Factor Attribution",
-    type="primary", use_container_width=True,
+    "Run Factor Attribution",
+    type="primary", width="stretch",
     disabled=(n_funds == 0),
 )
 
@@ -357,7 +325,7 @@ if run_btn and n_funds > 0:
     prog = st.progress(0, text="Loading 6-factor TRI data…")
     factor_df, source_names, err = get_factor_returns_6f(rf_rate=rf_rate)
     if err or factor_df is None:
-        st.error(f"❌ Factor data unavailable: {err}")
+        st.error(f"Factor data unavailable: {err}")
         st.stop()
 
     eff_factor_start = factor_df.index[0].strftime("%d %b %Y")
@@ -398,13 +366,21 @@ if run_btn and n_funds > 0:
         "factor_start":     eff_factor_start,
         "factor_end":       eff_factor_end,
     }
-    st.success(f"✅ Attribution complete — factor data: {eff_factor_start} → {eff_factor_end}")
+    st.success(f"Attribution complete — factor data: {eff_factor_start} → {eff_factor_end}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RESULTS
 # ─────────────────────────────────────────────────────────────────────────────
 if "_fa_result" not in st.session_state:
+    st.info(
+        "Pick 1–3 funds above and click **Run Factor Attribution**.\n\n"
+        "The model decomposes each fund's return into six factor exposures — "
+        "market, size, value, momentum, quality and low volatility — and "
+        "reports what is left over as alpha.",
+    )
     st.stop()
+
+stale_result_notice(_fa_stale, "fund selection or settings")
 
 res         = st.session_state["_fa_result"]
 funds_data  = res["funds_data"]
@@ -422,10 +398,10 @@ st.caption(
 )
 
 tab1, tab2, tab3, tab4 = st.tabs([
-    "📐 Factor Loadings",
-    "📈 Rolling Exposures",
-    "🧩 Return Attribution",
-    "🔄 Regime Analysis",
+    "Factor Loadings",
+    "Rolling Exposures",
+    "Return Attribution",
+    "Regime Analysis",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -434,9 +410,14 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.subheader("Standardised Factor Betas")
     st.caption(
-        "Beta = 1.0 means one full standard-deviation tilt toward that factor. "
-        "** = significant at 95% · * = 90% · No mark = not significant. "
-        "Model uses the full common date range for OLS."
+        "These betas are standardised on both sides: a value of 0.40 means a "
+        "one-standard-deviation move in that factor moves the fund 0.40 of "
+        "its own standard deviation. That makes them comparable **across "
+        "factors**, which raw betas are not, because the factors differ in "
+        "volatility. The raw betas — the conventional 'market beta 0.95' "
+        "reading — are what appear in Rankings and All Metrics. "
+        "** = significant at 95% · * = 90% · no mark = not significant. "
+        "OLS over the full common date range."
     )
 
     if n_funds == 1:
@@ -457,7 +438,7 @@ with tab1:
         r2    = model.get("r_squared_6f")
 
         q1.metric("6F Alpha (Ann.)",  fmt_pct(alpha) if alpha is not None else "N/A",
-                  delta=f"|t| = {abs(at):.2f} {'✅' if at and abs(at)>=1.96 else '⚠️'}"
+                  delta=f"|t| = {abs(at):.2f} {'✓' if at and abs(at)>=1.96 else ''}"
                   if at is not None else None, delta_color="off")
         q2.metric("6F R²",            f"{r2:.4f}" if r2 is not None else "N/A")
         q3.metric("Observations",     f"{model.get('n_obs', 0):,}")
@@ -497,7 +478,9 @@ with tab1:
             table_rows.append(row)
 
         beta_df = pd.DataFrame(table_rows).set_index("Factor")
-        st.dataframe(beta_df, use_container_width=True)
+        st.dataframe(beta_df, width="stretch")
+        export_button(beta_df, "factor_betas.csv",
+                      label="↓ Betas CSV", key="dl_fa_betas")
 
         st.divider()
 
@@ -513,11 +496,14 @@ with tab1:
                 "Fund":            fund_name[:50],
                 "6F Alpha (Ann.)": fmt_pct(alpha) if alpha is not None else "N/A",
                 "Alpha t-stat":    f"{at:.2f}" if at is not None else "N/A",
-                "Alpha sig.":      "✅" if at and abs(at) >= 1.96 else ("⚠️" if at and abs(at) >= 1.65 else "✗"),
+                "Alpha sig.":      "✓" if at and abs(at) >= 1.96 else ("" if at and abs(at) >= 1.65 else "✗"),
                 "R²":              f"{r2:.4f}" if r2 is not None else "N/A",
                 "N obs":           f"{model.get('n_obs', 0):,}",
             })
-        st.dataframe(pd.DataFrame(quality_rows).set_index("Fund"), use_container_width=True)
+        _quality_df = pd.DataFrame(quality_rows).set_index("Fund")
+        st.dataframe(_quality_df, width="stretch")
+        export_button(_quality_df, "factor_model_quality.csv",
+                      label="↓ Model quality CSV", key="dl_fa_quality")
 
     # Factor data source note
     with st.expander("Factor data sources", expanded=False):
@@ -543,12 +529,10 @@ with tab2:
         st.info(
             f"Rolling betas require at least {window_days + 30} common trading days. "
             "Select a shorter window or a fund with more history.",
-            icon="ℹ️",
         )
     else:
-        st.plotly_chart(
+        chart(
             _plot_rolling_grid(funds_data, period_label, window_label),
-            use_container_width=True,
         )
 
         # Tip
@@ -570,7 +554,7 @@ with tab3:
         "Negative contributions point left."
     )
 
-    st.plotly_chart(_plot_attribution(funds_data), use_container_width=True)
+    chart(_plot_attribution(funds_data))
 
     st.divider()
 
@@ -599,13 +583,14 @@ with tab3:
     attr_rows.append(total_row)
 
     attr_df = pd.DataFrame(attr_rows).set_index("Factor")
-    st.dataframe(attr_df, use_container_width=True)
+    st.dataframe(attr_df, width="stretch")
+    export_button(attr_df, "return_attribution.csv",
+                  label="↓ Attribution CSV", key="dl_fa_attr")
 
     st.info(
         "**Interpretation:** The 'Total Explained' row is the model-implied CAGR. "
         "The 6F alpha row shows returns not explained by any of the six systematic factors. "
         "Large positive alpha with high t-stat (Tab 1) indicates genuine manager skill.",
-        icon="ℹ️",
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -623,24 +608,20 @@ with tab4:
 
     # Regime legend
     rc1, rc2, rc3 = st.columns(3)
-    rc1.markdown(
-        "<div style='background:rgba(76,175,80,0.15);border-radius:6px;padding:8px;text-align:center'>"
-        "🐂 <b>Bull</b><br><small>Nifty 500 rolling CAGR > 10%</small></div>",
-        unsafe_allow_html=True,
-    )
-    rc2.markdown(
-        "<div style='background:rgba(255,152,0,0.15);border-radius:6px;padding:8px;text-align:center'>"
-        "↔️ <b>Sideways</b><br><small>0% – 10%</small></div>",
-        unsafe_allow_html=True,
-    )
-    rc3.markdown(
-        "<div style='background:rgba(244,67,54,0.15);border-radius:6px;padding:8px;text-align:center'>"
-        "🐻 <b>Bear</b><br><small>Nifty 500 rolling CAGR < 0%</small></div>",
-        unsafe_allow_html=True,
-    )
+    for _col, _tone, _label, _rule in (
+        (rc1, "up",   "Bull",     "Nifty 500 rolling CAGR &gt; 10%"),
+        (rc2, "flat", "Sideways", "0% – 10%"),
+        (rc3, "down", "Bear",     "Nifty 500 rolling CAGR &lt; 0%"),
+    ):
+        card(
+            f"<b>{_label}</b>" + card_body(_rule),
+            container = _col,
+            tone      = _tone,
+            center    = True,
+        )
     st.divider()
 
-    for fund_name in fund_names:
+    for _fi, fund_name in enumerate(fund_names):
         rd = funds_data[fund_name]["regime_betas"]
         st.markdown(f"#### {fund_name[:70]}")
 
@@ -654,16 +635,36 @@ with tab4:
 
         # Regime beta table
         rt = _regime_table(rd, FACTOR_ORDER)
-        st.dataframe(rt, use_container_width=True)
+        st.dataframe(rt, width="stretch")
+        # Key and filename are scoped to the fund, because this block runs
+        # once per selected fund: a fixed key raises
+        # StreamlitDuplicateElementKey as soon as a second fund is picked, and
+        # a fixed filename would have the second download overwrite the first.
+        #
+        # The slot index — not a truncated name — is what guarantees the key
+        # is unique. AMFI scheme names are long and share their openings
+        # ("ICICI Prudential Large & Mid Cap Fund - Direct Plan - Growth" vs
+        # the Regular Plan of the same fund diverge well past character 40),
+        # so a truncated name slug collides on exactly the pairs a user is
+        # most likely to compare. The slug stays only to keep the downloaded
+        # filename readable.
+        _slug = re.sub(r"[^A-Za-z0-9]+", "_", fund_name)[:40].strip("_").lower()
+        _fid  = f"{_fi}_{_slug}"
+        export_button(rt, f"regime_betas_{_fid}.csv",
+                      label="↓ Regime betas CSV", key=f"dl_fa_regime_{_fid}")
 
         # Alpha by regime
         alpha_rows = []
         for regime in ["Bull", "Sideways", "Bear"]:
             rdata = rd.get(regime)
             if rdata and "alpha" in rdata:
+                _at = rdata.get("alpha_tstat")
                 alpha_rows.append({
                     "Regime":       regime,
                     "Alpha (Ann.)": fmt_pct(rdata["alpha"]),
+                    "t-stat":       "—" if _at is None else f"{_at:.2f}",
+                    "Significant":  "—" if _at is None
+                                    else ("✓ 95%" if abs(_at) >= 1.96 else "no"),
                     "R²":           f"{rdata.get('r2', 0):.3f}",
                     "N obs":        f"{rdata.get('n_obs', 0):,}",
                 })
@@ -671,12 +672,13 @@ with tab4:
                 alpha_rows.append({
                     "Regime": regime,
                     "Alpha (Ann.)": "— (insufficient data)",
+                    "t-stat": "—", "Significant": "—",
                     "R²": "—", "N obs": "—",
                 })
-        st.dataframe(
-            pd.DataFrame(alpha_rows).set_index("Regime"),
-            use_container_width=True,
-        )
+        _regime_alpha_df = pd.DataFrame(alpha_rows).set_index("Regime")
+        st.dataframe(_regime_alpha_df, width="stretch")
+        export_button(_regime_alpha_df, f"regime_alpha_{_fid}.csv",
+                      label="↓ Regime alpha CSV", key=f"dl_fa_regime_alpha_{_fid}")
 
         st.caption(
             "**How to read:** A fund with QMJ (Quality) beta much higher in Bear than Bull "

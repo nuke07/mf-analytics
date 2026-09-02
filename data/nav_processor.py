@@ -19,7 +19,7 @@ Vectorized numpy/pandas operations are used throughout.
 
 import pandas as pd
 import numpy as np
-from typing import Optional, Tuple, List
+from typing import Optional
 from utils.constants import TRADING_DAYS_PER_YEAR
 
 
@@ -225,57 +225,6 @@ def slice_nav_for_years(
     return sliced
 
 
-def slice_nav_between(
-    nav: Optional[pd.Series],
-    start: pd.Timestamp,
-    end: Optional[pd.Timestamp] = None,
-) -> Optional[pd.Series]:
-    """
-    Slice NAV between two explicit dates.
-
-    Args:
-        nav:   Full NAV series
-        start: Start date (inclusive)
-        end:   End date (inclusive), defaults to last available date
-
-    Returns:
-        Sliced NAV series or None if empty
-    """
-    if nav is None or len(nav) == 0:
-        return None
-
-    if end is None:
-        end = nav.index[-1]
-
-    sliced = nav[(nav.index >= start) & (nav.index <= end)]
-
-    if len(sliced) < 2:
-        return None
-
-    return sliced
-
-
-def get_nav_at_date(
-    nav: pd.Series,
-    target_date: pd.Timestamp,
-) -> Optional[float]:
-    """
-    Look up NAV on or just before a target date (backward fill lookup).
-
-    Used when we need the NAV at a specific point in time and the exact
-    date may not be a trading day (e.g. checking NAV exactly 1 year ago).
-
-    Args:
-        nav:         Clean NAV series
-        target_date: Date to look up
-
-    Returns:
-        NAV as float, or None if no data exists before the target date
-    """
-    available = nav[nav.index <= target_date]
-    if len(available) == 0:
-        return None
-    return float(available.iloc[-1])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

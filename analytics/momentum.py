@@ -5,11 +5,9 @@ Momentum metrics — 1M / 3M / 6M / 12M point-in-time returns,
 alpha momentum, and risk-adjusted momentum (Momentum Sharpe).
 """
 
-import numpy as np
 import pandas as pd
 from typing import Optional, Dict
-from utils.constants import TRADING_DAYS_PER_YEAR, DEFAULT_RISK_FREE_RATE
-from data.nav_processor import compute_daily_returns
+from utils.constants import DEFAULT_RISK_FREE_RATE
 
 
 def _momentum_for_months(nav: Optional[pd.Series], months: int) -> Optional[float]:
@@ -43,13 +41,6 @@ def calc_momentum_6m(nav: Optional[pd.Series]) -> Optional[float]:
     return _momentum_for_months(nav, months=6)
 
 
-def calc_momentum_12m(nav: Optional[pd.Series]) -> Optional[float]:
-    """
-    12-Month return — strongest momentum predictor.
-    Top-quartile 12M momentum funds historically outperform by 4–8% p.a.
-    """
-    return _momentum_for_months(nav, months=12)
-
 
 def calc_alpha_momentum(
     fund_returns:      Optional[pd.Series],
@@ -73,29 +64,6 @@ def calc_alpha_momentum(
     return calc_jensens_alpha(f, b, rf_rate=rf_rate)
 
 
-def calc_momentum_sharpe(nav: Optional[pd.Series], months: int = 12) -> Optional[float]:
-    """
-    Momentum Sharpe = 12M Return / 12M Annualized Volatility.
-    Rewards smooth, sustained gains over volatile spikes.
-    > 1.5 = strong quality momentum.
-    """
-    if nav is None or len(nav) < 60:
-        return None
-    end_date   = nav.index[-1]
-    start_date = end_date - pd.DateOffset(months=months)
-    sliced = nav[nav.index >= start_date]
-    if len(sliced) < 30:
-        return None
-    momentum = float((sliced.iloc[-1] / sliced.iloc[0]) - 1)
-    returns  = compute_daily_returns(sliced)
-    if returns is None or len(returns) < 20:
-        return None
-    vol = float(returns.std(ddof=1) * np.sqrt(TRADING_DAYS_PER_YEAR))
-    if vol == 0 or np.isnan(vol):
-        return None
-    result = momentum / vol
-    return float(result) if np.isfinite(result) else None
-
 
 def calc_all_momentum(
     nav:               Optional[pd.Series],
@@ -108,9 +76,7 @@ def calc_all_momentum(
         "momentum_1m":     calc_momentum_1m(nav),
         "momentum_3m":     calc_momentum_3m(nav),
         "momentum_6m":     calc_momentum_6m(nav),
-        "momentum_12m":    calc_momentum_12m(nav),
         "alpha_momentum":  calc_alpha_momentum(
             fund_returns, benchmark_returns, rf_rate
         ) if fund_returns is not None and benchmark_returns is not None else None,
-        "momentum_sharpe": calc_momentum_sharpe(nav),
     }

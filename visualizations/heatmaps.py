@@ -23,9 +23,10 @@ Usage:
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from typing import Dict, List, Optional
+from typing import List, Optional
 from utils.constants import LOWER_IS_BETTER, METRIC_LABELS, QUARTILE_COLORS
-from visualizations._theme import base_layout, empty_figure
+from visualizations._theme import empty_figure
+from utils import theme as T
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,7 +37,7 @@ DEFAULT_HEATMAP_METRICS: List[str] = [
     "cagr_1y", "cagr_3y", "cagr_5y",
     "annualized_volatility", "max_drawdown",
     "sharpe", "sortino", "calmar",
-    "avg_rolling_1y", "win_rate",
+    "median_rolling_1y", "win_rate",
 ]
 
 
@@ -148,7 +149,7 @@ def plot_metric_heatmap(
         ),
         height        = max(height, 80 + 35 * len(sub)),
         paper_bgcolor = "rgba(0,0,0,0)",
-        plot_bgcolor  = "rgba(22,27,40,0.6)",
+        plot_bgcolor  = T.GROUND,
         font          = dict(color="#E0E0E0", size=10),
         margin        = dict(l=220, r=20, t=55, b=120),
         xaxis         = dict(
@@ -270,7 +271,7 @@ def plot_quartile_heatmap(
         ),
         height        = max(height, 100 + 38 * len(sub)),
         paper_bgcolor = "rgba(0,0,0,0)",
-        plot_bgcolor  = "rgba(22,27,40,0.6)",
+        plot_bgcolor  = T.GROUND,
         font          = dict(color="#E0E0E0", size=10),
         margin        = dict(l=220, r=20, t=75, b=120),
         xaxis         = dict(
@@ -299,8 +300,8 @@ def _green_red_scale():
     return [
         [0.00, "#b71c1c"],   # Deep red — worst
         [0.25, "#e53935"],
-        [0.45, "#FF9800"],   # Orange — middle
-        [0.55, "#FF9800"],
+        [0.45, T.INK_FAINT],   # neutral midpoint
+        [0.55, T.INK_FAINT],
         [0.75, "#66BB6A"],
         [1.00, "#2E7D32"],   # Deep green — best
     ]

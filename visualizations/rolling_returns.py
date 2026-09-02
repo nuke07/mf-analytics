@@ -29,13 +29,14 @@ Usage:
 """
 
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from typing import Dict, Optional
 from visualizations._theme import (
     base_layout, empty_figure, get_color,
-    UP_COLOR, DOWN_COLOR, NEUTRAL_COLOR,
+    UP_COLOR, DOWN_COLOR,
 )
+from utils import theme as T
+from visualizations._theme import last_value_badges
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,7 +97,7 @@ def plot_rolling_timeseries(
     fig.add_hline(
         y           = 0,
         line_dash   = "dash",
-        line_color  = "rgba(244,67,54,0.5)",
+        line_color  = T.rgba(T.DOWN, 0.5),
         line_width  = 1.2,
         annotation_text       = "0%",
         annotation_position   = "right",
@@ -118,6 +119,8 @@ def plot_rolling_timeseries(
     )
     fig.update_yaxes(ticksuffix="%")
 
+    # Stamp each line's final value on the right axis in its own colour.
+    last_value_badges(fig)
     return fig
 
 
@@ -208,7 +211,7 @@ def plot_rolling_distribution(
                 x = 0.02, y = 0.97,
                 showarrow = False,
                 align     = "left",
-                bgcolor   = "rgba(22,27,40,0.85)",
+                bgcolor   = T.rgba(T.PANEL_HI, 0.85),
                 bordercolor = "rgba(255,255,255,0.1)",
                 font      = dict(size=10, color="#E0E0E0"),
             )
@@ -233,7 +236,7 @@ def plot_rolling_distribution(
     fig.add_vline(
         x           = 0,
         line_dash   = "dash",
-        line_color  = "rgba(244,67,54,0.6)",
+        line_color  = T.rgba(T.DOWN, 0.6),
         line_width  = 1.5,
         annotation_text       = "0%",
         annotation_position   = "top",
@@ -325,13 +328,13 @@ def plot_rolling_combined(
         )
 
     # Zero lines
-    fig.add_hline(y=0, line_dash="dash", line_color="rgba(244,67,54,0.5)", line_width=1.2, row=1, col=1)
-    fig.add_vline(x=0, line_dash="dash", line_color="rgba(244,67,54,0.5)", line_width=1.2, row=2, col=1)
+    fig.add_hline(y=0, line_dash="dash", line_color=T.rgba(T.DOWN, 0.5), line_width=1.2, row=1, col=1)
+    fig.add_vline(x=0, line_dash="dash", line_color=T.rgba(T.DOWN, 0.5), line_width=1.2, row=2, col=1)
 
     fig.update_layout(
         height          = height,
         paper_bgcolor   = "rgba(0,0,0,0)",
-        plot_bgcolor    = "rgba(22,27,40,0.6)",
+        plot_bgcolor    = T.GROUND,
         font            = dict(color="#E0E0E0", family="sans-serif"),
         showlegend      = len(valid) > 1,
         hovermode       = "x unified",

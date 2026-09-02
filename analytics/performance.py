@@ -15,7 +15,6 @@ Design notes:
   - Vectorized where possible; no Python loops.
 """
 
-import numpy as np
 import pandas as pd
 from typing import Optional, Dict
 from data.nav_processor import slice_nav_for_years

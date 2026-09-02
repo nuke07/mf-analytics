@@ -139,15 +139,29 @@ def _terminal_statistics(
         for p in [5, 10, 25, 50, 75, 90, 95]
     }
 
-    # Drawdown statistics
-    max_drawdowns = _max_drawdown_vectorized(nav_paths)  # negative values
+    # ── Drawdown statistics ───────────────────────────────────────────────
+    # max_drawdowns are NEGATIVE (e.g. -0.32 = a 32% peak-to-trough fall).
+    #
+    # Percentiles taken directly on negative values run backwards against
+    # intuition: a HIGHER percentile of a negative series is the MILDER
+    # outcome. Reporting "P90 max drawdown" off np.percentile(dd, 90) would
+    # therefore understate the tail — the severe tail of a negative series
+    # sits at percentile 5, not 95.
+    #
+    # To remove that trap entirely we convert to SEVERITY MAGNITUDES first
+    # (positive, larger = worse) and take percentiles on those. Percentile p
+    # now means: "p% of simulated paths had a drawdown no worse than this."
+    # Callers must render these as-is — no abs(), no sign flip.
+    max_drawdowns = _max_drawdown_vectorized(nav_paths)   # negative decimals
+    dd_severity   = -max_drawdowns                        # positive decimals
+
     dd_pcts = {
-        p: float(np.percentile(max_drawdowns * 100, p))
-        for p in [5, 10, 25, 50, 75, 90, 95]
+        p: float(np.percentile(dd_severity * 100, p))
+        for p in [5, 10, 25, 50, 75, 90, 95, 99]
     }
 
-    # Drawdown at Risk: the drawdown exceeded with only 5% probability
-    dar_95 = float(np.percentile(max_drawdowns, 95))   # least negative at 95th pctile → worst 5%
+    # Drawdown at Risk (95%): the severity that only 5% of paths exceed.
+    dar_95 = float(np.percentile(dd_severity, 95))        # positive magnitude
 
     # Probability of exceeding drawdown thresholds
     dd_probs = {}
@@ -160,10 +174,13 @@ def _terminal_statistics(
         "prob_loss":            prob_loss,
         "var_cvar":             var_cvar,
         "return_percentiles":   return_pcts,
+        # Positive severity magnitudes in %. Percentile p = "p% of paths had a
+        # drawdown no worse than this". Render directly; do NOT call abs().
         "max_dd_percentiles":   dd_pcts,
+        # Positive severity magnitude (decimal). Exceeded by 5% of paths.
         "drawdown_at_risk_95":  dar_95,
         "dd_exceed_probs":      dd_probs,
-        "max_drawdowns":        max_drawdowns,   # full array for histogram
+        "max_drawdowns":        max_drawdowns,   # negative decimals, for histogram
         "terminal_returns":     terminal_returns, # full array for histogram
     }
 

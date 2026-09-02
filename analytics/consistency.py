@@ -140,7 +140,7 @@ def calc_all_consistency(nav: Optional[pd.Series]) -> Dict[str, Optional[float]]
 
     Returns:
         Dict with metric keys (scalars) and series keys (for charts):
-            avg_rolling_1y, median_rolling_1y, std_rolling_1y,
+            median_rolling_1y, std_rolling_1y,
             best_rolling_1y, worst_rolling_1y  (same pattern for _3y)
             _series_1y, _series_3y  (pd.Series — used by visualizations)
     """
@@ -149,14 +149,12 @@ def calc_all_consistency(nav: Optional[pd.Series]) -> Dict[str, Optional[float]]
 
     return {
         # ── 1-Year Rolling ────────────────────────────────────────────────
-        "avg_rolling_1y":    stats_1y["avg"],
         "median_rolling_1y": stats_1y["median"],
         "std_rolling_1y":    stats_1y["std"],
         "best_rolling_1y":   stats_1y["best"],
         "worst_rolling_1y":  stats_1y["worst"],
 
         # ── 3-Year Rolling ────────────────────────────────────────────────
-        "avg_rolling_3y":    stats_3y["avg"],
         "median_rolling_3y": stats_3y["median"],
         "std_rolling_3y":    stats_3y["std"],
         "best_rolling_3y":   stats_3y["best"],

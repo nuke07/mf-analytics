@@ -11,10 +11,11 @@ plot_trailing_returns() — Key design:
 """
 
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from typing import Dict, Optional
-from visualizations._theme import base_layout, empty_figure, get_color, UP_COLOR
+from visualizations._theme import base_layout, empty_figure, get_color
+from utils import theme as T
+from visualizations._theme import last_value_badges
 
 # Period label → calendar months (None = full history)
 PERIOD_MAP = {
@@ -130,84 +131,14 @@ def plot_trailing_returns(
         zerolinewidth= 1.8,
     )
 
+    # Stamp each line's final value on the right axis in its own colour.
+    last_value_badges(fig)
     return fig
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NAV HISTORY CHART  (existing — multi-fund)
 # ─────────────────────────────────────────────────────────────────────────────
-
-def plot_nav_history(
-    nav_dict:  Dict[str, Optional[pd.Series]],
-    normalize: bool = False,
-    title:     Optional[str] = None,
-    height:    int = 420,
-) -> go.Figure:
-    """
-    Plot NAV history for one or more funds.
-
-    normalize=True → each fund rebased to 100 at its own start date.
-    For comparing funds use plot_trailing_returns() instead — it gives
-    proper % returns from a common start date.
-    """
-    valid = {k: v for k, v in nav_dict.items() if v is not None and len(v) > 0}
-    if not valid:
-        return empty_figure("No NAV data available for chart")
-
-    if len(valid) > 1:
-        normalize = True
-
-    fig = go.Figure()
-
-    for i, (name, nav) in enumerate(valid.items()):
-        color = get_color(i)
-        if normalize:
-            first_valid = nav.iloc[0]
-            if first_valid <= 0:
-                continue
-            y_values = (nav / first_valid) * 100
-            y_label  = "Value (rebased to 100)"
-            hover    = (
-                "<b>%{fullData.name}</b><br>"
-                "Date: %{x|%d %b %Y}<br>"
-                "Rebased Value: %{y:.2f}<extra></extra>"
-            )
-        else:
-            y_values = nav
-            y_label  = "NAV (₹)"
-            hover    = (
-                "<b>%{fullData.name}</b><br>"
-                "Date: %{x|%d %b %Y}<br>"
-                "NAV: ₹%{y:,.4f}<extra></extra>"
-            )
-
-        fig.add_trace(go.Scatter(
-            x=nav.index, y=y_values,
-            name=name, mode="lines",
-            line=dict(color=color, width=2),
-            hovertemplate=hover,
-        ))
-
-    if title is None:
-        title = "NAV History" if len(valid) > 1 else f"NAV History — {list(valid.keys())[0]}"
-
-    fig.update_layout(base_layout(
-        title=title, x_title="Date", y_title=y_label,
-        height=height, hovermode="x unified",
-    ))
-    fig.update_xaxes(
-        rangeselector=dict(
-            bgcolor="rgba(22,27,40,0.9)", activecolor="#2196F3",
-            font=dict(color="#E0E0E0", size=11),
-            buttons=[
-                dict(count=1,  label="1Y", step="year",  stepmode="backward"),
-                dict(count=3,  label="3Y", step="year",  stepmode="backward"),
-                dict(count=5,  label="5Y", step="year",  stepmode="backward"),
-                dict(step="all", label="All"),
-            ],
-        ),
-    )
-    return fig
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -227,8 +158,8 @@ def plot_single_nav(
     fig.add_trace(go.Scatter(
         x=nav.index, y=nav.values,
         name=fund_name, mode="lines",
-        line=dict(color="#2196F3", width=2),
-        fill="tozeroy", fillcolor="rgba(33,150,243,0.08)",
+        line=dict(color=T.DATA_PRIMARY, width=2),
+        fill="tozeroy", fillcolor=T.rgba(T.DATA_PRIMARY, 0.08),
         hovertemplate=(
             f"<b>{fund_name}</b><br>"
             "Date: %{x|%d %b %Y}<br>"
@@ -242,7 +173,7 @@ def plot_single_nav(
     ))
     fig.update_xaxes(
         rangeselector=dict(
-            bgcolor="rgba(22,27,40,0.9)", activecolor="#2196F3",
+            bgcolor=T.PANEL_HI, activecolor=T.ACCENT,
             font=dict(color="#E0E0E0", size=11),
             buttons=[
                 dict(count=1,  label="1Y", step="year",  stepmode="backward"),

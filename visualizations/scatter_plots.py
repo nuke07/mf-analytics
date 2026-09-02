@@ -25,20 +25,23 @@ Both charts:
 
 Usage:
     from visualizations.scatter_plots import plot_risk_return_scatter
+    from utils.ui import chart
 
-    fig = plot_risk_return_scatter(full_df)
-    st.plotly_chart(fig, use_container_width=True)
+    chart(plot_risk_return_scatter(full_df))
+
+    Render through utils.ui.chart() rather than st.plotly_chart(): it applies
+    the shared toolbar config, and use_container_width is deprecated.
 """
 
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from typing import Optional, List
-from utils.constants import QUARTILE_COLORS, METRIC_LABELS
+from typing import Optional
+from utils.constants import QUARTILE_COLORS
 from visualizations._theme import (
     base_layout, empty_figure,
-    UP_COLOR, DOWN_COLOR, NEUTRAL_COLOR,
 )
+from utils import theme as T
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,88 +231,6 @@ def plot_vol_cagr_scatter(
 # GENERIC SCATTER (configurable axes — used by future pages)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_scatter(
-    full_df:  pd.DataFrame,
-    x_metric: str,
-    y_metric: str,
-    title:    Optional[str] = None,
-    height:   int = 480,
-) -> go.Figure:
-    """
-    Generic scatter plot for any two metrics from the analytics engine.
-
-    Args:
-        full_df:  Full metrics DataFrame
-        x_metric: Column name for X-axis (e.g. 'annualized_volatility')
-        y_metric: Column name for Y-axis (e.g. 'sharpe')
-        title:    Optional title
-        height:   Chart height
-
-    Returns:
-        go.Figure
-    """
-    for col in [x_metric, y_metric]:
-        if col not in full_df.columns:
-            return empty_figure(f"Metric '{col}' not available")
-
-    plot_df = full_df[[x_metric, y_metric]].dropna()
-    if plot_df.empty:
-        return empty_figure("No funds have data for both metrics")
-
-    x_vals = plot_df[x_metric]
-    y_vals = plot_df[y_metric]
-
-    # Scale percentages
-    if x_metric in _PCT_METRICS:
-        x_vals = x_vals * 100
-    if y_metric in _PCT_METRICS:
-        y_vals = y_vals * 100
-
-    names = [_truncate(n, 40) for n in plot_df.index]
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x             = x_vals,
-            y             = y_vals,
-            mode          = "markers+text",
-            marker        = dict(size=10, color="#2196F3", opacity=0.8,
-                                 line=dict(color="rgba(255,255,255,0.3)", width=1)),
-            text          = names,
-            textposition  = "top center",
-            textfont      = dict(size=8, color="#C0C0C0"),
-            hovertemplate = (
-                "<b>%{text}</b><br>"
-                f"{METRIC_LABELS.get(x_metric, x_metric)}: %{{x:.3f}}<br>"
-                f"{METRIC_LABELS.get(y_metric, y_metric)}: %{{y:.3f}}"
-                "<extra></extra>"
-            ),
-            showlegend    = False,
-        )
-    )
-
-    x_label = METRIC_LABELS.get(x_metric, x_metric)
-    y_label = METRIC_LABELS.get(y_metric, y_metric)
-    if x_metric in _PCT_METRICS:
-        x_label += " (%)"
-    if y_metric in _PCT_METRICS:
-        y_label += " (%)"
-
-    fig.update_layout(
-        base_layout(
-            title   = title or f"{x_label} vs {y_label}",
-            x_title = x_label,
-            y_title = y_label,
-            height  = height,
-        )
-    )
-    if x_metric in _PCT_METRICS:
-        fig.update_xaxes(ticksuffix="%")
-    if y_metric in _PCT_METRICS:
-        fig.update_yaxes(ticksuffix="%")
-
-    return fig
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INTERNAL HELPERS
@@ -319,8 +240,8 @@ _PCT_METRICS = {
     "cagr_1y", "cagr_3y", "cagr_5y", "cagr_inception",
     "annualized_volatility", "downside_volatility",
     "max_drawdown", "avg_drawdown",
-    "avg_rolling_1y", "avg_rolling_3y",
-    "positive_freq", "negative_freq", "win_rate",
+    "median_rolling_1y", "median_rolling_3y",
+    "positive_freq", "win_rate",
     "pct_positive_rolling_1y", "pct_positive_rolling_3y",
 }
 
@@ -336,7 +257,7 @@ def _get_quartile_colors(
 ) -> list:
     """Map quartile labels to colours for scatter markers."""
     src = source_df if source_df is not None else plot_df
-    default = "#2196F3"
+    default = T.DATA_PRIMARY
 
     if quartile_col is None or quartile_col not in src.columns:
         return [default] * len(plot_df)

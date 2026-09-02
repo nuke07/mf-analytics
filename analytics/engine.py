@@ -21,14 +21,13 @@ Computation order:
     10. Alpha (Benchmark-Relative) — Phase A
     11. Momentum — Phase B
     12. Alpha Persistence + Bull/Bear — Phase B
-    13. Factor Model (Fama-French-Carhart 4-Factor) — Phase C
+    13. Factor Model (6-Factor: Market/SMB/HML/WML/QMJ/BAB) — TRI-based
+    14. Market-relative alpha (dual benchmarking: category + broad market)
 
 Note (Phase D): Step 14 (Active Share Proxies) removed.
 """
 
-import streamlit as st
 import pandas as pd
-import numpy as np
 from typing import Optional, Dict, List
 import logging
 
@@ -43,6 +42,7 @@ from analytics.performance    import calc_all_cagr
 from analytics.risk           import calc_all_risk
 from analytics.volatility     import calc_all_volatility
 from analytics.risk_adjusted  import calc_all_risk_adjusted
+from analytics.uncertainty   import sharpe_interval
 from analytics.consistency    import calc_all_consistency
 from analytics.distribution   import calc_all_distribution
 from analytics.stability      import calc_all_stability
@@ -50,7 +50,7 @@ from analytics.persistence    import calc_all_persistence
 from analytics.alpha             import calc_all_alpha
 from analytics.momentum          import calc_all_momentum
 from analytics.alpha_persistence import calc_all_alpha_persistence
-from analytics.factor_model      import calc_all_factor_model
+from analytics.factor_model      import calc_all_factor_model_6f
 from analytics.quartile       import build_full_quartile_table
 from utils.constants          import DEFAULT_RISK_FREE_RATE, MAR
 from utils.validators         import check_nav_series
@@ -69,6 +69,8 @@ def compute_fund_metrics(
     benchmark_nav_df:  Optional[pd.DataFrame] = None,
     benchmark_name:    str   = "",
     factor_returns_df: Optional[pd.DataFrame] = None,
+    market_nav_df:     Optional[pd.DataFrame] = None,
+    market_name:       str   = "Nifty 500 TRI",
 ) -> Dict:
     empty_result = {
         "nav": None, "returns": None, "log_returns": None,
@@ -82,8 +84,10 @@ def compute_fund_metrics(
     empty_result["_benchmark_nav"]     = None
     empty_result["_benchmark_name"]    = ""
     empty_result["_benchmark_returns"] = None
-    empty_result["_rolling_alpha_4f"]  = None
+    empty_result["_rolling_alpha_6f"]  = None
     empty_result["_factor_names_used"] = []
+    empty_result["_market_name"]       = ""
+    empty_result["_market_nav"]        = None
 
     # ── Step 1: Process NAV ───────────────────────────────────────────────────
     if nav_df is None:
@@ -138,6 +142,16 @@ def compute_fund_metrics(
         max_drawdown    = result.get("max_drawdown"),
         rf_rate         = rf_rate,
     ))
+
+    # ── Step 6b: How much of that Sharpe is the sample ────────────────────────
+    # sharpe_interval() recomputes the point estimate from the same inputs
+    # calc_sharpe uses, so the two cannot drift apart. The recomputed value is
+    # discarded and the existing one kept, so this step can only ADD keys —
+    # a ranking that silently changed because an interval was added would be a
+    # worse bug than the one this fixes.
+    _unc = sharpe_interval(returns, rf_rate=rf_rate)
+    _unc.pop("sharpe", None)
+    result.update(_unc)
 
     # ── Step 7: Consistency (Rolling Returns) ─────────────────────────────────
     consistency = calc_all_consistency(nav)
@@ -198,22 +212,55 @@ def compute_fund_metrics(
         rf_rate           = rf_rate,
     ))
 
-    # ── Step 14: Factor Model (Fama-French-Carhart 4-Factor) ──────────────────
-    result["_rolling_alpha_4f"]  = None
+    # ── Step 14: Factor Model (6-Factor: Market/SMB/HML/WML/QMJ/BAB) ──────────
+    result["_rolling_alpha_6f"]  = None
     result["_factor_names_used"] = []
 
     if factor_returns_df is not None and not factor_returns_df.empty:
         fund_ret_for_factors = result.get("returns")
         if fund_ret_for_factors is not None:
-            factor_metrics = calc_all_factor_model(
+            factor_metrics = calc_all_factor_model_6f(
                 fund_returns = fund_ret_for_factors,
                 factor_df    = factor_returns_df,
                 rf_rate      = rf_rate,
             )
-            result["_rolling_alpha_4f"]  = factor_metrics.pop("_rolling_alpha_4f", None)
+            result["_rolling_alpha_6f"]  = factor_metrics.pop("_rolling_alpha_6f", None)
             result["_factor_names_used"] = factor_metrics.pop("factors_used", [])
-            factor_metrics.pop("n_factors", None)
             result.update(factor_metrics)
+
+    # ── Step 15: Market-relative alpha (dual benchmarking) ────────────────────
+    #
+    # Step 11 measures the fund against its SEBI category benchmark — the
+    # mandated comparison, and the one that answers "did this manager beat
+    # the peers' yardstick?". This step measures the SAME fund against the
+    # broad market (Nifty 500 TRI) to answer a different question: "did this
+    # fund beat simply owning the market?"
+    #
+    # A mid-cap fund can beat Nifty Midcap 150 and still lag Nifty 500, or
+    # vice versa. Both numbers are real; neither alone is the whole picture.
+    #
+    # Category metrics keep the UNSUFFIXED keys so nothing downstream
+    # changes. Market metrics are suffixed _mkt.
+    for key in _MARKET_ALPHA_KEYS:
+        result.setdefault(key, None)
+    result["_market_name"] = market_name
+    result["_market_nav"]  = None
+
+    if market_nav_df is not None:
+        from data.nav_processor import align_nav_series
+
+        market_nav = process_nav(market_nav_df)
+        result["_market_nav"] = market_nav
+        if market_nav is not None and nav is not None:
+            aligned_m = align_nav_series({"fund": nav, "market": market_nav})
+            if len(aligned_m) == 2 and aligned_m.get("fund") is not None:
+                m_returns   = compute_daily_returns(aligned_m["market"])
+                f_returns_m = compute_daily_returns(aligned_m["fund"])
+
+                mkt_metrics = calc_all_alpha(f_returns_m, m_returns, rf_rate)
+                mkt_metrics.pop("_rolling_alpha", None)
+                for base_key, value in mkt_metrics.items():
+                    result[f"{base_key}_mkt"] = value
 
     return result
 
@@ -229,6 +276,8 @@ def compute_category_metrics(
     benchmark_nav_df:  Optional[pd.DataFrame] = None,
     benchmark_name:    str   = "",
     factor_returns_df: Optional[pd.DataFrame] = None,
+    market_nav_df:     Optional[pd.DataFrame] = None,
+    market_name:       str   = "Nifty 500 TRI",
 ) -> Dict[str, Dict]:
     results: Dict[str, Dict] = {}
     total = len(fund_nav_dict)
@@ -251,6 +300,8 @@ def compute_category_metrics(
                 benchmark_nav_df  = benchmark_nav_df,
                 benchmark_name    = benchmark_name,
                 factor_returns_df = factor_returns_df,
+                market_nav_df     = market_nav_df,
+                market_name       = market_name,
             )
         except Exception as e:
             logger.error(f"engine: compute_fund_metrics failed for '{fund_name}': {e}")
@@ -269,53 +320,19 @@ def compute_category_quartiles(
 # STREAMLIT CACHED WRAPPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_cached_fund_metrics(
-    scheme_code: str,
-    rf_rate:     float = DEFAULT_RISK_FREE_RATE,
-) -> Dict:
-    from data.fund_loader import get_nav_history
-    nav_df = get_nav_history(scheme_code)
-    return compute_fund_metrics(nav_df, rf_rate=rf_rate, fund_name=scheme_code)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_cached_category_metrics(
-    category:  str,
-    rf_rate:   float = DEFAULT_RISK_FREE_RATE,
-    plan_type: str   = "Direct",
-) -> Dict[str, Dict]:
-    from data.fund_loader      import get_schemes_for_category, load_navs_for_funds
-    from data.benchmark_loader import get_benchmark_nav, get_benchmark_info
-
-    fund_list = get_schemes_for_category(category, plan_type=plan_type)
-    if not fund_list:
-        return {}
-
-    bm_info   = get_benchmark_info(category)
-    bm_nav_df = get_benchmark_nav(category) if bm_info["available"] else None
-    bm_name   = bm_info["display_name"]
-
-    from data.factor_loader import get_factor_returns
-    factor_df, _ = get_factor_returns(rf_rate=rf_rate)
-
-    nav_dict = {
-        fund["name"]: load_navs_for_funds([fund]).get(fund["code"])
-        for fund in fund_list
-    }
-
-    return compute_category_metrics(
-        nav_dict,
-        rf_rate           = rf_rate,
-        benchmark_nav_df  = bm_nav_df,
-        benchmark_name    = bm_name,
-        factor_returns_df = factor_df,
-    )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INTERNAL: Complete list of scalar metric keys produced by the engine
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Alpha-family metrics measured against the BROAD MARKET (Nifty 500 TRI)
+# rather than the fund's SEBI category benchmark. Same calculations, second
+# yardstick — see Step 15 in compute_fund_metrics.
+_MARKET_ALPHA_KEYS: List[str] = [
+    "excess_return_mkt", "beta_mkt", "r_squared_mkt", "tracking_error_mkt",
+    "information_ratio_mkt", "jensens_alpha_mkt", "alpha_tstat_mkt",
+    "up_capture_mkt", "down_capture_mkt", "capture_ratio_mkt",
+]
 
 _ALL_METRIC_KEYS: List[str] = [
     # Performance
@@ -326,15 +343,20 @@ _ALL_METRIC_KEYS: List[str] = [
     "max_drawdown", "avg_drawdown", "drawdown_duration",
     # Risk-Adjusted
     "sharpe", "sortino", "calmar",
+    # How much of that Sharpe is the sample. Lo (2002) standard error with a
+    # Newey-West correction for the serial correlation stale pricing puts into
+    # fund NAVs — see analytics/uncertainty.py. Alpha has shipped with a
+    # t-statistic since day one; Sharpe, which Rankings sorts on, had nothing.
+    "sharpe_se", "sharpe_ci_low", "sharpe_ci_high",
+    "sharpe_n_obs", "sharpe_acf_inflation",
     # Consistency
-    "avg_rolling_1y", "median_rolling_1y", "std_rolling_1y",
-    "best_rolling_1y", "worst_rolling_1y",
-    "avg_rolling_3y", "median_rolling_3y", "std_rolling_3y",
+    "median_rolling_1y", "std_rolling_1y",
+    "best_rolling_1y", "worst_rolling_1y", "median_rolling_3y", "std_rolling_3y",
     "best_rolling_3y", "worst_rolling_3y",
     # Distribution
     "skewness", "kurtosis",
     # Stability
-    "positive_freq", "negative_freq", "win_rate",
+    "positive_freq", "win_rate",
     # Persistence
     "pct_positive_rolling_1y", "pct_positive_rolling_3y",
     "max_consec_positive", "max_consec_negative",
@@ -343,14 +365,17 @@ _ALL_METRIC_KEYS: List[str] = [
     "information_ratio", "jensens_alpha", "alpha_tstat",
     "up_capture", "down_capture", "capture_ratio",
     # Momentum (Phase B)
-    "momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m",
-    "alpha_momentum", "momentum_sharpe",
+    "momentum_1m", "momentum_3m", "momentum_6m",
+    "alpha_momentum",
     # Alpha Persistence & Regime (Phase B)
     "alpha_persistence", "bull_alpha", "bear_alpha",
     "alpha_regime_ratio", "drawdown_recovery_rate",
-    # Factor Model (Phase C)
-    "alpha_4f", "alpha_4f_tstat", "beta_market_4f",
-    "beta_smb", "beta_hml", "beta_wml", "r_squared_4f",
+    # Factor Model — 6F (Market/SMB/HML/WML/QMJ/BAB), TRI-based.
+    # Replaced the 4F model. Betas are STANDARDISED so a loading of 1.0 means
+    # the same thing across factors and funds; contributions use raw betas.
+    "alpha_6f", "alpha_6f_tstat", "r_squared_6f",
+    "beta_market_6f", "beta_smb", "beta_hml", "beta_wml",
+    "beta_qmj", "beta_bab",
     "contrib_market", "contrib_smb", "contrib_hml",
-    "contrib_wml", "contrib_alpha",
-]
+    "contrib_wml", "contrib_qmj", "contrib_bab", "contrib_alpha",
+] + _MARKET_ALPHA_KEYS

@@ -3,15 +3,17 @@ analytics/factor_model.py
 ==========================
 Factor model analytics for mutual fund return attribution.
 
-Two model tiers:
-    4-Factor (Fama-French-Carhart):
-        calc_all_factor_model()    ← called by engine.py, unchanged
-        calc_factor_model()        ← internal 4F regression
+One model, six factors (Market, SMB, HML, WML, QMJ, BAB):
+    calc_all_factor_model_6f()     <- entry point called by engine.py
+    calc_factor_model_6f()         <- full 6F OLS, standardised and raw betas
+    calc_rolling_factor_betas()    <- rolling window betas per factor
+    calc_regime_betas()            <- betas split by market regime
 
-    6-Factor (extended for Factor Attribution page):
-        calc_factor_model_6f()         ← full 6F OLS with standardised betas
-        calc_rolling_factor_betas()    ← rolling window betas per factor
-        calc_regime_betas()            ← betas split by market regime
+The 4-factor Carhart tier (calc_factor_model / calc_all_factor_model) was
+deleted once every caller had moved to 6F; nothing in the app regressed on
+four factors any more. The one survivor with a 4F name,
+_calc_rolling_alpha_4f, is factor-count agnostic and is still what produces
+the rolling-alpha series for the 6F model.
 
 Standardisation note (6F model only):
     Factors are pre-scaled to zero mean, unit variance using full-sample
@@ -26,7 +28,6 @@ Standardisation note (6F model only):
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Tuple
-from scipy import stats
 from utils.constants import TRADING_DAYS_PER_YEAR, DEFAULT_RISK_FREE_RATE
 
 
@@ -69,79 +70,6 @@ def _ols_with_stats(
 # 4-FACTOR MODEL  (used by engine.py — interface unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calc_factor_model(
-    fund_returns: pd.Series,
-    factor_df:   pd.DataFrame,
-    rf_rate:     float = DEFAULT_RISK_FREE_RATE,
-) -> Dict:
-    """
-    4-Factor OLS regression (Market, SMB, HML, WML).
-    Called internally by calc_all_factor_model().
-    """
-    empty = {
-        "alpha_4f": None, "alpha_4f_tstat": None,
-        "beta_market_4f": None, "beta_smb": None,
-        "beta_hml": None,       "beta_wml": None,
-        "r_squared_4f": None,
-        "contrib_market": None, "contrib_smb": None,
-        "contrib_hml": None,    "contrib_wml": None,
-        "contrib_alpha": None,  "factors_used": [],
-        "n_factors": 0,         "_rolling_alpha_4f": None,
-    }
-
-    try:
-        rf_daily = rf_rate / TRADING_DAYS_PER_YEAR
-        common   = fund_returns.dropna().index.intersection(
-            factor_df.dropna(how="any").index
-        )
-        if len(common) < 252:
-            return empty
-
-        Y = (fund_returns.reindex(common) - rf_daily).values
-        factors_available = [f for f in ["market", "smb", "hml", "wml"]
-                             if f in factor_df.columns]
-        if not factors_available:
-            return empty
-
-        X = np.column_stack([
-            np.ones(len(common)),
-            factor_df[factors_available].reindex(common).values,
-        ])
-
-        betas, t_stats, r2 = _ols_with_stats(Y, X)
-        alpha_ann = float(betas[0] * TRADING_DAYS_PER_YEAR)
-
-        factor_means = factor_df[factors_available].reindex(common).mean()
-        contribs     = {}
-        for i, fname in enumerate(factors_available):
-            contribs[fname] = float(betas[i + 1] * factor_means[fname] * TRADING_DAYS_PER_YEAR)
-        contribs["alpha"] = alpha_ann
-
-        result = {
-            "alpha_4f":       alpha_ann,
-            "alpha_4f_tstat": float(t_stats[0]),
-            "r_squared_4f":   float(r2),
-            "contrib_alpha":  contribs.get("alpha"),
-            "contrib_market": contribs.get("market"),
-            "contrib_smb":    contribs.get("smb"),
-            "contrib_hml":    contribs.get("hml"),
-            "contrib_wml":    contribs.get("wml"),
-            "factors_used":   factors_available,
-            "n_factors":      len(factors_available),
-        }
-        for i, fname in enumerate(factors_available):
-            key = "beta_market_4f" if fname == "market" else f"beta_{fname}"
-            result[key] = float(betas[i + 1])
-
-        # Rolling 4F alpha
-        result["_rolling_alpha_4f"] = _calc_rolling_alpha_4f(
-            fund_returns, factor_df, factors_available, rf_rate
-        )
-        return result
-
-    except Exception:
-        return empty
-
 
 def _calc_rolling_alpha_4f(
     fund_returns:       pd.Series,
@@ -183,31 +111,84 @@ def _calc_rolling_alpha_4f(
         return None
 
 
-def calc_all_factor_model(
-    fund_returns: Optional[pd.Series],
-    factor_df:   Optional[pd.DataFrame],
-    rf_rate:     float = DEFAULT_RISK_FREE_RATE,
-) -> Dict:
-    """Entry point called by engine.py — interface unchanged."""
-    if fund_returns is None or factor_df is None or factor_df.empty:
-        return {
-            "alpha_4f": None, "alpha_4f_tstat": None,
-            "beta_market_4f": None, "beta_smb": None,
-            "beta_hml": None, "beta_wml": None,
-            "r_squared_4f": None,
-            "contrib_market": None, "contrib_smb": None,
-            "contrib_hml": None, "contrib_wml": None,
-            "contrib_alpha": None, "factors_used": [],
-            "n_factors": 0, "_rolling_alpha_4f": None,
-        }
-    return calc_factor_model(fund_returns, factor_df, rf_rate)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6-FACTOR MODEL  (used by Factor Attribution page)
 # ─────────────────────────────────────────────────────────────────────────────
 
 FACTOR_6F_NAMES = ["market", "smb", "hml", "wml", "qmj", "bab"]
+
+_EMPTY_6F_ENGINE: Dict = {
+    "alpha_6f": None, "alpha_6f_tstat": None, "r_squared_6f": None,
+    "beta_market_6f": None, "beta_smb": None, "beta_hml": None,
+    "beta_wml": None, "beta_qmj": None, "beta_bab": None,
+    "contrib_market": None, "contrib_smb": None, "contrib_hml": None,
+    "contrib_wml": None, "contrib_qmj": None, "contrib_bab": None,
+    "contrib_alpha": None,
+    "factors_used": [], "_rolling_alpha_6f": None,
+}
+
+
+def calc_all_factor_model_6f(
+    fund_returns: Optional[pd.Series],
+    factor_df:    Optional[pd.DataFrame],
+    rf_rate:      float = DEFAULT_RISK_FREE_RATE,
+) -> Dict:
+    """
+    Entry point called by engine.py — the 6-factor model in engine key shape.
+
+    This replaced the 4F entry point at the 6F migration; the 4F functions
+    have since been deleted, so this is the only factor model in the app.
+
+    Key mapping:
+      - beta_{factor}      → the RAW beta, so that "market beta 0.95" carries
+        its conventional meaning in rankings and the All Metrics list. Raw
+        betas are comparable ACROSS FUNDS because every fund is regressed on
+        the same factor series. The standardised betas — comparable across
+        DIFFERENT factors — stay on the Factor Attribution page.
+      - contrib_{factor}   → computed from the RAW beta, since a return
+        attribution has to be in return units:
+        contribution_k = raw_beta_k × mean(factor_k) × 252
+      - alpha_6f           → the RAW intercept, annualised. See the long note
+        in calc_factor_model_6f explaining why it must not come from the
+        standardised fit.
+
+    Identity worth remembering: alpha_6f + Σ contrib_{factor} equals the
+    fund's realised annualised excess return over rf.
+    """
+    if fund_returns is None or factor_df is None or factor_df.empty:
+        return dict(_EMPTY_6F_ENGINE)
+
+    core = calc_factor_model_6f(fund_returns, factor_df, rf_rate)
+    if core.get("alpha_6f") is None:
+        return dict(_EMPTY_6F_ENGINE)
+
+    result: Dict = {
+        "alpha_6f":       core.get("alpha_6f"),
+        "alpha_6f_tstat": core.get("alpha_6f_tstat"),
+        "r_squared_6f":   core.get("r_squared_6f"),
+        "contrib_alpha":  core.get("alpha_6f"),
+        "factors_used":   list(FACTOR_6F_NAMES),
+    }
+
+    for fname in FACTOR_6F_NAMES:
+        key = "beta_market_6f" if fname == "market" else f"beta_{fname}"
+        # RAW betas for the engine, not standardised ones. Rankings tables and
+        # the All Metrics list are read with the conventional interpretation —
+        # "market beta 0.95", "SMB loading 0.60" — and a raw beta is directly
+        # comparable across funds because every fund is regressed on the same
+        # factor series. The dimensionless standardised betas are for
+        # comparing DIFFERENT factors against each other, which is what the
+        # Factor Attribution page's grid does; they stay there.
+        result[key]                 = core.get(f"beta_{fname}_raw")
+        result[f"contrib_{fname}"]  = core.get(f"contrib_{fname}")
+
+    # Rolling alpha, on RAW factors — the helper is factor-count agnostic.
+    available = [f for f in FACTOR_6F_NAMES if f in factor_df.columns]
+    result["_rolling_alpha_6f"] = _calc_rolling_alpha_4f(
+        fund_returns, factor_df, available, rf_rate
+    )
+    return result
 
 
 def calc_factor_model_6f(
@@ -274,16 +255,51 @@ def calc_factor_model_6f(
         X_std = np.column_stack([np.ones(len(common)), F_std.values])
         X_raw = np.column_stack([np.ones(len(common)), F_raw.values])
 
-        b_std, t_std, r2 = _ols_with_stats(Y, X_std)
-        b_raw, _,     _  = _ols_with_stats(Y, X_raw)
+        b_std, t_std, r2   = _ols_with_stats(Y, X_std)
+        b_raw, t_raw, _    = _ols_with_stats(Y, X_raw)
 
-        # Alpha — same in both (standardisation doesn't affect intercept in expectation,
-        # but use b_std[0] which is cleaner)
-        alpha_ann = float(b_std[0] * TRADING_DAYS_PER_YEAR)
+        # ── Standardised betas must divide by the DEPENDENT variable's SD too ─
+        #
+        # Standardising only the regressors leaves b_std_k = b_raw_k · σ_k,
+        # which still carries the units of Y — a daily return. Those come out
+        # around 0.01, so the documented reading ("a loading of 1.0 means one
+        # full standard-deviation tilt") could never be true of them.
+        #
+        # A proper standardised (beta) coefficient divides by σ_Y as well:
+        #
+        #     b_beta_k = b_raw_k · σ_k / σ_Y
+        #
+        # That is dimensionless and reads as "a one-SD move in this factor
+        # moves the fund b_beta_k standard deviations" — comparable across
+        # factors of different volatility AND across funds.
+        sigma_Y = float(np.std(Y, ddof=1))
+        if sigma_Y > 0:
+            b_std = np.asarray(b_std, dtype=float).copy()
+            b_std[1:] = b_std[1:] / sigma_Y
+
+        # ── Alpha MUST come from the RAW fit, never the standardised one ─────
+        #
+        # Standardising the regressors DOES move the intercept. Centering each
+        # factor by its mean shifts the intercept by the sum of the factor risk
+        # premia the fund is exposed to:
+        #
+        #     a_std = a_raw + Σ_k ( b_raw_k · mean(factor_k) )
+        #
+        # With every regressor centred, the OLS intercept collapses to simply
+        # mean(Y) — the fund's average excess return. So b_std[0] is not alpha
+        # at all: it is total excess return over the risk-free rate, and it
+        # reported every fund as a huge alpha generator. The falsifying case:
+        # Nifty 500 IS the market factor, so its alpha must be zero, yet this
+        # returned +8.45% at R² = 1.000 (its own excess return).
+        #
+        # The standardised BETAS remain correct and are still what we want for
+        # cross-factor comparability — only the intercept was wrong.
+        # R² is unaffected: standardisation is an affine reparameterisation.
+        alpha_ann = float(b_raw[0] * TRADING_DAYS_PER_YEAR)
 
         result = {
             "alpha_6f":       alpha_ann,
-            "alpha_6f_tstat": float(t_std[0]),
+            "alpha_6f_tstat": float(t_raw[0]),
             "r_squared_6f":   float(r2),
             "n_obs":          len(common),
             "effective_start":common[0],
@@ -354,6 +370,15 @@ def calc_rolling_factor_betas(
         F_stds = F_raw.std()
         F_std  = (F_raw - F_means) / F_stds
 
+        # Divide by the FULL-SAMPLE σ of the dependent variable, matching
+        # calc_factor_model_6f, so these betas are dimensionless and share one
+        # fixed scale across every window. Using each window's own σ_Y would
+        # make the line move when the fund's volatility changes even if its
+        # factor exposure did not — the opposite of what this chart is for.
+        sigma_Y = float(excess.std(ddof=1))
+        if not sigma_Y or not np.isfinite(sigma_Y) or sigma_Y <= 0:
+            sigma_Y = 1.0
+
         rolling_betas = []
         rolling_dates = []
 
@@ -370,7 +395,7 @@ def calc_rolling_factor_betas(
                 X = np.column_stack([np.ones(valid.sum()), xf[valid]])
                 b, _, _ = _ols_with_stats(ef[valid], X)
                 if np.all(np.isfinite(b[1:])):
-                    rolling_betas.append(b[1:])
+                    rolling_betas.append(b[1:] / sigma_Y)
                     rolling_dates.append(common[end])
             except Exception:
                 continue
@@ -447,6 +472,9 @@ def calc_regime_betas(
         F_raw  = factor_df[required].reindex(common)
         F_means= F_raw.mean()
         F_stds = F_raw.std()
+        sigma_Y_full = float(excess.std(ddof=1))
+        if not sigma_Y_full or not np.isfinite(sigma_Y_full) or sigma_Y_full <= 0:
+            sigma_Y_full = 1.0
         F_std  = (F_raw - F_means) / F_stds
 
         for regime_name in ["Bull", "Sideways", "Bear"]:
@@ -463,15 +491,29 @@ def calc_regime_betas(
 
             ef = excess[mask].values
             xf = F_std[mask].values
-            X  = np.column_stack([np.ones(n), xf])
+            X      = np.column_stack([np.ones(n), xf])
+            X_raw  = np.column_stack([np.ones(n), F_raw[mask].values])
 
             try:
-                b, t, r2 = _ols_with_stats(ef, X)
+                b, t, r2       = _ols_with_stats(ef, X)
+                b_raw, t_raw, _= _ols_with_stats(ef, X_raw)
+                # Same full-sample σ_Y scaling as calc_factor_model_6f, so
+                # regime betas sit on the same dimensionless scale as the
+                # full-period ones and can be read side by side.
                 result[regime_name] = {
-                    fname: {"beta": float(b[i+1]), "tstat": float(t[i+1])}
+                    fname: {"beta": float(b[i+1] / sigma_Y_full),
+                            "tstat": float(t[i+1])}
                     for i, fname in enumerate(required)
                 }
-                result[regime_name]["alpha"] = float(b[0] * TRADING_DAYS_PER_YEAR)
+                # Alpha from the RAW fit — see the note in calc_factor_model_6f.
+                # Standardising shifts the intercept by the factor risk premia
+                # the fund is exposed to, which turns "alpha" into total excess
+                # return. Note the standardisation here uses FULL-SAMPLE means,
+                # so within a regime the centred regressors do not have zero
+                # mean and the bias is Σ b_k · mean_full(factor_k) — still
+                # wrong, just less obviously so.
+                result[regime_name]["alpha"]       = float(b_raw[0] * TRADING_DAYS_PER_YEAR)
+                result[regime_name]["alpha_tstat"] = float(t_raw[0])
                 result[regime_name]["r2"]    = float(r2)
                 result[regime_name]["n_obs"] = n
             except Exception:

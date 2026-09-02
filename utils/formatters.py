@@ -149,26 +149,6 @@ def fmt_date(dt) -> str:
         return "N/A"
 
 
-def fmt_large_num(value: Optional[float]) -> str:
-    """
-    Format large numbers with K/M/B suffixes.
-    e.g. 1_500_000 → '1.5M', 2_300 → '2.3K'
-    """
-    if value is None:
-        return "N/A"
-    try:
-        if np.isnan(value) or np.isinf(value):
-            return "N/A"
-        if abs(value) >= 1e9:
-            return f"{value / 1e9:.1f}B"
-        elif abs(value) >= 1e6:
-            return f"{value / 1e6:.1f}M"
-        elif abs(value) >= 1e3:
-            return f"{value / 1e3:.1f}K"
-        return f"{value:.0f}"
-    except (TypeError, ValueError):
-        return "N/A"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STREAMLIT STYLING HELPERS
@@ -195,75 +175,9 @@ def style_quartile(val: str) -> str:
     return styles.get(str(val), "")
 
 
-def style_positive_negative(val: str) -> str:
-    """
-    Return CSS style for a value that should be green if positive, red if negative.
-    Works on strings like '12.34%' or '-5.67%'.
-
-    Used with df.style.applymap(style_positive_negative).
-    """
-    try:
-        # Strip % and spaces to get the raw number
-        raw = str(val).replace("%", "").replace("₹", "").strip()
-        num = float(raw)
-        if num > 0:
-            return "color: #4CAF50; font-weight: bold"
-        elif num < 0:
-            return "color: #F44336; font-weight: bold"
-        return ""
-    except ValueError:
-        return ""
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPOSITE DISPLAY BUILDERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def format_metrics_for_display(metrics: dict) -> dict:
-    """
-    Take a raw metrics dict (floats) and return a display-ready dict (strings).
-    Applies correct formatter to each known metric key.
 
-    Args:
-        metrics: Dict with raw float values keyed by metric name
-
-    Returns:
-        Dict with same keys but formatted string values
-    """
-    # Define which formatter to use per metric
-    PCT_METRICS = {
-        "cagr_1y", "cagr_3y", "cagr_5y", "cagr_inception",
-        "annualized_volatility", "downside_volatility",
-        "max_drawdown", "avg_drawdown",
-        "avg_rolling_1y", "median_rolling_1y", "std_rolling_1y",
-        "best_rolling_1y", "worst_rolling_1y",
-        "avg_rolling_3y", "median_rolling_3y", "std_rolling_3y",
-        "best_rolling_3y", "worst_rolling_3y",
-        "positive_freq", "negative_freq", "win_rate",
-        "pct_positive_rolling_1y", "pct_positive_rolling_3y",
-    }
-    RATIO_METRICS = {
-        "sharpe", "sortino", "calmar",
-        "skewness", "kurtosis",
-    }
-    DAYS_METRICS = {
-        "drawdown_duration",
-    }
-    INT_METRICS = {
-        "max_consec_positive", "max_consec_negative",
-    }
-
-    display = {}
-    for key, value in metrics.items():
-        if key in PCT_METRICS:
-            display[key] = fmt_pct(value)
-        elif key in RATIO_METRICS:
-            display[key] = fmt_ratio(value)
-        elif key in DAYS_METRICS:
-            display[key] = fmt_days(value)
-        elif key in INT_METRICS:
-            display[key] = str(int(value)) if value is not None and not np.isnan(value) else "N/A"
-        else:
-            display[key] = fmt_num(value)
-
-    return display

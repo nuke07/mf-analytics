@@ -29,13 +29,30 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Single shared mftool instance
-_mf = Mftool()
+# Single shared mftool instance — created LAZILY.
+#
+# Mftool.__init__ calls get_scheme_codes() (mftool.py:64), which hits AMFI
+# over the network. Building it at module scope meant that when AMFI was
+# unreachable, `import data.fund_loader` itself raised — taking down every
+# page before the triple-fallback in get_all_schemes() could run. The
+# fallback chain only works if importing this module never touches the
+# network.
+_mf = None
+
+
+def _get_mftool():
+    """Return the shared Mftool instance, constructing it on first use."""
+    global _mf
+    if _mf is None:
+        _mf = Mftool()
+    return _mf
 
 # Direct API URL (mftool's backend — used as fallback)
 _MFAPI_ALL_URL    = "https://api.mfapi.in/mf"
 _MFAPI_SCHEME_URL = "https://api.mfapi.in/mf/{code}"
-_AMFI_NAV_URL     = "https://www.amfiindia.com/spages/NAVAll.txt"
+# amfiindia.com now 302-redirects here. requests follows redirects, but
+# pointing straight at the current host saves a hop and one failure mode.
+_AMFI_NAV_URL     = "https://portal.amfiindia.com/spages/NAVAll.txt"
 
 _HEADERS = {
     "User-Agent": (
@@ -52,40 +69,145 @@ _HEADERS = {
 # SCHEME REGISTRY
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SCHEME NAME CONTRACT
+#
+# Everything downstream (category_mapper.filter_preferred_plans,
+# filter_direct_plans, filter_regular_plans) identifies a fund's plan and
+# option by SUBSTRING MATCH on the scheme name. That requires names in the
+# composite form:
+#
+#     "Axis ELSS Tax Saver Fund - Direct Plan - Growth Option"
+#
+# mfapi.in still returns exactly that. AMFI's NAVAll.txt used to as well —
+# but its schema changed. It is now 8 fields with Plan and Option split into
+# their own columns, and field 3 holding only the bare fund name:
+#
+#   OLD (6 fields):
+#     Scheme Code;ISIN Payout;ISIN Reinvest;Scheme Name;NAV;Date
+#     → field 3 = "Axis Banking & PSU Debt Fund - Direct Plan - Growth Option"
+#
+#   NEW (8 fields):
+#     Scheme Code;ISIN Payout;ISIN Reinvest;Scheme Name;Plan;Option;NAV;Date
+#     → field 3 = "Axis Banking & PSU Debt Fund"
+#     → field 4 = "Direct Plan"
+#     → field 5 = "Growth Option"
+#
+# Under the new schema no name contains "growth" or "direct", so the growth
+# filter discarded essentially the entire universe and the app reported a
+# handful of funds. We therefore RECOMPOSE the legacy form on parse, and
+# validate every source before trusting it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_numeric(value: str) -> bool:
+    """True if the field parses as a number (i.e. it is a NAV, not a plan)."""
+    try:
+        float(value.strip())
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+def _compose_scheme_name(name: str, plan: str = "", option: str = "") -> str:
+    """Rebuild the legacy 'Name - Plan - Option' form from split columns."""
+    parts = [p for p in (name.strip(), plan.strip(), option.strip()) if p and p != "-"]
+    return " - ".join(parts)
+
+
+def _validate_scheme_names(schemes: Dict[str, str], source: str) -> Dict[str, str]:
+    """
+    Reject a source whose names lack plan/option information.
+
+    Without this guard a source that silently changes shape (as AMFI just
+    did) still "succeeds" — it returns thousands of rows — and the breakage
+    only surfaces much later as an inexplicably tiny fund universe. Failing
+    loudly here lets get_all_schemes() fall through to a source that still
+    honours the contract.
+    """
+    if not schemes:
+        raise ValueError(f"{source} returned no schemes.")
+
+    sample = list(schemes.values())[:4000]
+    with_option = sum(
+        1 for n in sample
+        if "growth" in n.lower() or "idcw" in n.lower() or "dividend" in n.lower()
+    )
+    with_plan = sum(
+        1 for n in sample
+        if "direct" in n.lower() or "regular" in n.lower()
+    )
+
+    # Healthy AMFI/mfapi data is overwhelmingly plan- and option-suffixed.
+    # 20% is far below any plausible real value and far above zero noise.
+    if with_option / len(sample) < 0.20 or with_plan / len(sample) < 0.20:
+        raise ValueError(
+            f"{source} returned {len(schemes):,} schemes but only "
+            f"{with_option} of {len(sample)} sampled names carry an option "
+            f"(Growth/IDCW) and {with_plan} carry a plan (Direct/Regular). "
+            "The source has probably split Plan/Option into separate fields. "
+            "Names must be in 'Fund Name - Plan - Option' form."
+        )
+    return schemes
+
+
 def _fetch_schemes_via_mftool() -> Dict[str, str]:
     """
     Fetch all schemes using mftool's get_scheme_codes().
-    Returns {code: name} or raises an exception on failure.
+
+    NOTE: mftool 3.3 reads AMFI's field 3 directly (mftool.py:95,
+    `scheme_info[scheme[0]] = scheme[3]`) with no awareness of the new
+    Plan/Option columns, so on the current AMFI schema it returns BARE fund
+    names. _validate_scheme_names() catches that and forces a fallback.
     """
-    codes = _mf.get_scheme_codes(as_json=False)
-    if codes and len(codes) > 0:
-        return dict(codes)
-    raise ValueError("mftool.get_scheme_codes() returned empty — AMFI URL may be blocked.")
+    codes = _get_mftool().get_scheme_codes(as_json=False)
+    if not codes:
+        raise ValueError("mftool.get_scheme_codes() returned empty — AMFI URL may be blocked.")
+    return _validate_scheme_names(dict(codes), "mftool.get_scheme_codes()")
 
 
 def _fetch_schemes_via_amfi_direct() -> Dict[str, str]:
     """
-    Direct fallback: fetch scheme list from AMFI NAVAll.txt.
-    Format: Code;ISIN1;ISIN2;Name;NAV;Date (semicolon separated)
-    Returns {code: name} or raises on failure.
+    Fetch the scheme list straight from AMFI NAVAll.txt.
+
+    Handles BOTH schemas:
+      - 8+ fields → Plan (4) and Option (5) are separate; recompose the name
+      - 6-7 fields → legacy layout, field 3 already carries plan and option
+
+    Returns {code: composite_name}, or raises on failure.
     """
-    r = requests.get(_AMFI_NAV_URL, headers=_HEADERS, timeout=20)
+    r = requests.get(_AMFI_NAV_URL, headers=_HEADERS, timeout=20, allow_redirects=True)
     r.raise_for_status()
 
     schemes: Dict[str, str] = {}
     for line in r.text.splitlines():
         if ";" not in line:
-            continue
+            continue                      # section headers and AMC names
         parts = line.split(";")
-        if len(parts) >= 4:
-            code = parts[0].strip()
-            name = parts[3].strip()
-            if code.isdigit() and name:
-                schemes[code] = name
+        if len(parts) < 4:
+            continue
+
+        code = parts[0].strip()
+        if not code.isdigit():
+            continue                      # skips the column-header row
+
+        name = parts[3].strip()
+        if not name:
+            continue
+
+        # Discriminate on field count: legacy is exactly 6, current is 8.
+        # Testing `>= 6` would misread a legacy row and append the NAV and
+        # date to the fund name. The numeric check on field 4 is a second
+        # guard — in the legacy layout that position holds the NAV.
+        if len(parts) >= 8 and not _is_numeric(parts[4]):
+            # Current schema: Plan and Option in their own columns.
+            schemes[code] = _compose_scheme_name(name, parts[4], parts[5])
+        else:
+            # Legacy schema: field 3 already holds the composite name.
+            schemes[code] = name
 
     if not schemes:
         raise ValueError("AMFI NAVAll.txt parsed but no schemes found.")
-    return schemes
+    return _validate_scheme_names(schemes, "AMFI NAVAll.txt")
 
 
 def _fetch_schemes_via_mfapi_direct() -> Dict[str, str]:
@@ -104,7 +226,9 @@ def _fetch_schemes_via_mfapi_direct() -> Dict[str, str]:
     }
     if not schemes:
         raise ValueError("mfapi.in/mf returned empty list.")
-    return schemes
+    # mfapi.in still publishes composite names ("... - Direct Plan - Growth
+    # Option"), but validate anyway so a future change there fails loudly too.
+    return _validate_scheme_names(schemes, "mfapi.in/mf")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -122,35 +246,25 @@ def get_all_schemes() -> Dict[str, str]:
     """
     errors: List[str] = []
 
-    # ── Attempt 1: mftool ────────────────────────────────────────────────────
-    try:
-        schemes = _fetch_schemes_via_mftool()
-        logger.info(f"[fund_loader] mftool: {len(schemes):,} schemes loaded")
-        return schemes
-    except Exception as e:
-        msg = f"mftool.get_scheme_codes() failed: {type(e).__name__}: {e}"
-        errors.append(msg)
-        logger.warning(f"[fund_loader] {msg}")
-
-    # ── Attempt 2: Direct AMFI ───────────────────────────────────────────────
-    try:
-        schemes = _fetch_schemes_via_amfi_direct()
-        logger.info(f"[fund_loader] AMFI direct: {len(schemes):,} schemes loaded")
-        return schemes
-    except Exception as e:
-        msg = f"AMFI direct fetch failed: {type(e).__name__}: {e}"
-        errors.append(msg)
-        logger.warning(f"[fund_loader] {msg}")
-
-    # ── Attempt 3: mfapi.in direct ───────────────────────────────────────────
-    try:
-        schemes = _fetch_schemes_via_mfapi_direct()
-        logger.info(f"[fund_loader] mfapi.in direct: {len(schemes):,} schemes loaded")
-        return schemes
-    except Exception as e:
-        msg = f"mfapi.in direct fetch failed: {type(e).__name__}: {e}"
-        errors.append(msg)
-        logger.warning(f"[fund_loader] {msg}")
+    # Order matters. Our own AMFI parser goes FIRST because it is the only
+    # one that understands the current NAVAll.txt schema. mftool is kept as a
+    # fallback for networks where the direct fetch is blocked but its bundled
+    # session succeeds — its output is validated, so if it returns bare names
+    # we fall straight through instead of trusting them.
+    for label, fetch in (
+        ("AMFI NAVAll.txt",           _fetch_schemes_via_amfi_direct),
+        ("mfapi.in/mf",               _fetch_schemes_via_mfapi_direct),
+        ("mftool.get_scheme_codes()", _fetch_schemes_via_mftool),
+    ):
+        try:
+            schemes = fetch()
+            logger.info(f"[fund_loader] {label}: {len(schemes):,} schemes loaded")
+            st.session_state["scheme_source"] = label
+            return schemes
+        except Exception as e:
+            msg = f"{label} failed: {type(e).__name__}: {e}"
+            errors.append(msg)
+            logger.warning(f"[fund_loader] {msg}")
 
     # ── All failed ───────────────────────────────────────────────────────────
     logger.error(f"[fund_loader] ALL sources failed:\n" + "\n".join(errors))
@@ -158,42 +272,6 @@ def get_all_schemes() -> Dict[str, str]:
     st.session_state["scheme_load_errors"] = errors
     return {}
 
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_scheme_details(scheme_code: str) -> Optional[Dict]:
-    """
-    Fetch metadata for a single scheme (name, category, type, start date).
-
-    Returns dict with keys:
-        fund_house, scheme_type, scheme_category,
-        scheme_code, scheme_name, scheme_start_date
-    """
-    try:
-        details = _mf.get_scheme_details(scheme_code)
-        if details:
-            return details
-    except Exception as e:
-        logger.warning(f"[fund_loader] mftool.get_scheme_details({scheme_code}) failed: {e}")
-
-    # Fallback: get from mfapi.in directly
-    try:
-        url = _MFAPI_SCHEME_URL.format(code=scheme_code)
-        r = requests.get(url, headers=_HEADERS, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        meta = data.get("meta", {})
-        hist = data.get("data", [])
-        return {
-            "fund_house":        meta.get("fund_house", ""),
-            "scheme_type":       meta.get("scheme_type", ""),
-            "scheme_category":   meta.get("scheme_category", ""),
-            "scheme_code":       meta.get("scheme_code", scheme_code),
-            "scheme_name":       meta.get("scheme_name", ""),
-            "scheme_start_date": hist[-1] if hist else {},
-        }
-    except Exception as e:
-        logger.error(f"[fund_loader] Direct scheme_details({scheme_code}) also failed: {e}")
-        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,7 +338,7 @@ def get_nav_history(scheme_code: str) -> Optional[pd.DataFrame]:
 
     # ── Attempt 1: mftool ────────────────────────────────────────────────────
     try:
-        raw = _mf.get_scheme_historical_nav(scheme_code, as_Dataframe=True)
+        raw = _get_mftool().get_scheme_historical_nav(scheme_code, as_Dataframe=True)
 
         if raw is not None and isinstance(raw, pd.DataFrame) and not raw.empty:
             df = raw.copy()
@@ -388,3 +466,83 @@ def load_navs_for_funds(
         result[code] = get_nav_history(code)
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PARALLEL NAV LOADING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_navs_parallel(
+    codes,
+    max_workers: int = 6,
+    progress_cb  = None,
+) -> Dict[str, Optional[pd.DataFrame]]:
+    """
+    Fetch NAV history for many schemes concurrently.
+
+    Every page loaded NAVs in a plain for-loop, so the wait was the SUM of the
+    round-trips: Portfolio Analytics with two full portfolios meant 16 serial
+    fetches at 2–5s each, up to ~80 seconds of mostly-idle waiting. These are
+    independent I/O-bound HTTP calls, so they overlap perfectly.
+
+    get_nav_history is wrapped in @st.cache_data, and Streamlit's cache reads
+    the *script run context* of the calling thread. Worker threads do not
+    inherit it, which produces "missing ScriptRunContext" warnings and makes
+    cache behaviour unreliable — so the caller's context is explicitly
+    attached to each worker.
+
+    Args:
+        codes:       Iterable of scheme codes. Duplicates are fetched once.
+        max_workers: Concurrency. Kept modest — mfapi.in is a free community
+                     API and there is no reason to hammer it.
+        progress_cb: Optional callable(done:int, total:int, code:str) invoked
+                     as each fetch completes, for progress bars.
+
+    Returns:
+        {scheme_code: DataFrame or None}. A failed fetch yields None rather
+        than raising, matching get_nav_history's own contract.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    unique = list(dict.fromkeys(str(c) for c in codes))
+    if not unique:
+        return {}
+
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
+        ctx = get_script_run_ctx()
+    except Exception:
+        ctx = None
+
+    def _fetch(code):
+        try:
+            return code, get_nav_history(code)
+        except Exception as e:
+            logger.warning(f"[fund_loader] NAV fetch failed for {code}: {e}")
+            return code, None
+
+    results: Dict[str, Optional[pd.DataFrame]] = {}
+    workers = max(1, min(max_workers, len(unique)))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_fetch, c) for c in unique]
+
+        # Attach the Streamlit context to the pool's threads. Must happen
+        # after submit(), since the pool creates threads lazily.
+        if ctx is not None:
+            for t in getattr(pool, "_threads", ()):
+                try:
+                    add_script_run_ctx(t, ctx)
+                except Exception:
+                    pass
+
+        for i, fut in enumerate(as_completed(futures), start=1):
+            code, nav = fut.result()
+            results[code] = nav
+            if progress_cb is not None:
+                try:
+                    progress_cb(i, len(unique), code)
+                except Exception:
+                    pass
+
+    return results

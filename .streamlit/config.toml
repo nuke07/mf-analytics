@@ -1,13 +1,84 @@
+# Streamlit reads this file before any Python runs, so the colour values here
+# repeat what utils/theme.py defines. test_design_system.py asserts they stay in
+# step — if you change the palette, change it in theme.py and let the test tell
+# you this file drifted.
+#
+# Typography is declared HERE rather than in injected CSS. Streamlit sets its
+# own family on the app shell with enough specificity that an
+# `html, body { font-family: ... }` rule loses the cascade — when this was done
+# in CSS, the labels and figures took and every line of body copy stayed on the
+# default sans. The font-face tables below register the faces properly and the
+# font / headingFont / codeFont keys point each role at them.
+
 [theme]
-primaryColor        = "#2196F3"
-backgroundColor     = "#0E1117"
-secondaryBackgroundColor = "#1A1F2E"
-textColor           = "#FAFAFA"
-font                = "sans serif"
+base                     = "dark"
+primaryColor             = "#5E7CE8"   # theme.ACCENT
+backgroundColor          = "#000000"   # theme.GROUND
+secondaryBackgroundColor = "#0A0B0E"   # theme.PANEL
+textColor                = "#E6EAF2"   # theme.INK
+codeTextColor            = "#E6EAF2"   # theme.INK — an identifier you may want to read
+baseFontSize             = 16
+
+# Archivo is a neutral grotesque in the Swiss/International line — the family
+# Bloomberg's own identity sits in: tight apertures, low stroke contrast, no
+# personality of its own, which is what a UI face should have. Roles:
+#   font        — body copy, labels, everything that is words
+#   headingFont — the same grotesque; headings differ by size and weight
+#   codeFont    — the monospace, which is also what every FIGURE is set in,
+#                 because its digits are tabular (all 600 units wide)
+font                     = "Archivo, Segoe UI, system-ui, sans-serif"
+headingFont              = "Archivo, Segoe UI, system-ui, sans-serif"
+codeFont                 = "IBM Plex Mono, ui-monospace, monospace"
+
+[[theme.fontFaces]]
+family = "Archivo"
+url    = "app/static/fonts/Archivo-400.woff2"
+weight = "400"
+style  = "normal"
+
+[[theme.fontFaces]]
+family = "Archivo"
+url    = "app/static/fonts/Archivo-500.woff2"
+weight = "500"
+style  = "normal"
+
+[[theme.fontFaces]]
+family = "Archivo"
+url    = "app/static/fonts/Archivo-600.woff2"
+weight = "600"
+style  = "normal"
+
+[[theme.fontFaces]]
+family = "Archivo"
+url    = "app/static/fonts/Archivo-700.woff2"
+weight = "700"
+style  = "normal"
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url    = "app/static/fonts/PlexMono-400.woff2"
+weight = "400"
+style  = "normal"
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url    = "app/static/fonts/PlexMono-500.woff2"
+weight = "500"
+style  = "normal"
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url    = "app/static/fonts/PlexMono-600.woff2"
+weight = "600"
+style  = "normal"
 
 [server]
 headless            = true
 enableCORS          = false
+# Serves ./static at /app/static/. The webfonts are bundled rather than pulled
+# from a CDN: the app runs locally and must not depend on the network for its
+# typeface. 120 KB total, cached by the browser.
+enableStaticServing = true
 
 [browser]
 gatherUsageStats    = false

@@ -14,7 +14,6 @@ Design decisions:
 To extend: add new keywords to CATEGORY_KEYWORDS in constants.py.
 """
 
-import re
 from typing import Optional, Dict, List
 from utils.constants import (
     CATEGORY_KEYWORDS,
@@ -22,6 +21,8 @@ from utils.constants import (
     EXCLUDED_STRUCTURE_KEYWORDS,
     INDEX_EXCLUSIONS,
     PREFERRED_OPTIONS,
+    DIRECT_KEYWORDS,
+    REGULAR_KEYWORDS,
     CATEGORIES,
 )
 
@@ -126,8 +127,18 @@ def filter_preferred_plans(all_schemes: Dict[str, str]) -> Dict[str, str]:
             continue
 
         # ── MUST NOT be a structural exclusion (ETF, FoF, etc.) ──────────────
-        if any(excl in name_lower for excl in EXCLUDED_STRUCTURE_KEYWORDS):
-            continue
+        # Exception: the "debt fund" keyword is there to drop pure debt
+        # schemes, but Aggressive Hybrid funds are literally named
+        # "... Equity & Debt Fund" (ICICI Prudential Equity & Debt Fund,
+        # SBI Equity Hybrid Fund's peers, etc). Excluding them on that
+        # substring wiped out the whole Aggressive Hybrid category.
+        hits = [excl for excl in EXCLUDED_STRUCTURE_KEYWORDS if excl in name_lower]
+        if hits:
+            is_equity_hybrid = any(
+                kw in name_lower for kw in CATEGORY_KEYWORDS["Aggressive Hybrid"]
+            )
+            if not (is_equity_hybrid and hits == ["debt fund"]):
+                continue
 
         filtered[code] = name
 
@@ -147,7 +158,7 @@ def filter_direct_plans(schemes: Dict[str, str]) -> Dict[str, str]:
     return {
         code: name
         for code, name in schemes.items()
-        if "direct" in name.lower()
+        if any(k in name.lower() for k in DIRECT_KEYWORDS)
     }
 
 
@@ -169,9 +180,9 @@ def filter_regular_plans(schemes: Dict[str, str]) -> Dict[str, str]:
     result = {}
     for code, name in schemes.items():
         name_lower = name.lower()
-        if "regular" in name_lower:
+        if any(k in name_lower for k in REGULAR_KEYWORDS):
             result[code] = name
-        elif "direct" not in name_lower:
+        elif not any(k in name_lower for k in DIRECT_KEYWORDS):
             # Older scheme without plan label — include as regular
             result[code] = name
     return result
@@ -217,72 +228,6 @@ def filter_by_plan_type(
 # NAME CLEANING
 # ─────────────────────────────────────────────────────────────────────────────
 
-def clean_fund_name(raw_name: str) -> str:
-    """
-    Remove plan/option suffixes from a scheme name for display purposes.
-
-    Examples:
-      'Axis Bluechip Fund - Direct Plan - Growth'     → 'Axis Bluechip Fund'
-      'HDFC Mid-Cap Opportunities Fund - Growth'       → 'HDFC Mid-Cap Opportunities Fund'
-      'SBI Small Cap Fund - Regular Plan - Growth'     → 'SBI Small Cap Fund'
-
-    Args:
-        raw_name: Full scheme name from mftool
-
-    Returns:
-        Cleaned display name
-    """
-    if not raw_name:
-        return raw_name
-
-    patterns = [
-        r"\s*-\s*direct\s*plan.*",
-        r"\s*-\s*regular\s*plan.*",
-        r"\s*-\s*plan\s*[a-z1-9].*",
-        r"\s*-\s*growth.*",
-        r"\s*-\s*option.*",
-        r"\s*\(.*\)\s*$",
-    ]
-
-    name = raw_name.strip()
-    for pattern in patterns:
-        name = re.sub(pattern, "", name, flags=re.IGNORECASE).strip()
-
-    return name
-
-
-def get_fund_house(scheme_name: str) -> str:
-    """
-    Extract the AMC/fund house name from a scheme name.
-    Uses the first word(s) before the first space-dash-space as the fund house.
-
-    This is a heuristic — not 100% reliable for all names.
-
-    Args:
-        scheme_name: Full scheme name
-
-    Returns:
-        Likely fund house name string
-    """
-    # Most scheme names: "AMC Name Fund Type... - Plan - Option"
-    # Fund house is typically the first 1-3 words
-    known_houses = [
-        "Axis", "HDFC", "SBI", "ICICI Prudential", "Nippon India",
-        "Kotak", "Mirae Asset", "DSP", "Franklin Templeton", "UTI",
-        "Aditya Birla Sun Life", "Tata", "Invesco India", "Edelweiss",
-        "PGIM India", "Motilal Oswal", "Parag Parikh", "Quant",
-        "Canara Robeco", "IDFC", "Sundaram", "L&T", "Baroda BNP Paribas",
-        "Navi", "360 ONE", "WhiteOak Capital", "Bandhan", "Union",
-        "JM Financial", "LIC MF", "BOI AXA", "Quantum",
-    ]
-
-    name_lower = scheme_name.lower()
-    for house in known_houses:
-        if name_lower.startswith(house.lower()):
-            return house
-
-    # Fallback: first word
-    return scheme_name.split()[0] if scheme_name.split() else "Unknown"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

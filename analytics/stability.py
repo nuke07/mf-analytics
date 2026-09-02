@@ -18,7 +18,8 @@ Negative Return Frequency:
     Fraction of trading days where daily return < 0.
     Formula: count(r_t < 0) / total_trading_days
 
-    Note: positive_freq + negative_freq ≤ 1 (flat days make up the rest).
+    Note: negative_freq was retired — it is the arithmetic complement of
+    positive_freq (up to flat days) and could never rank funds differently.
 
 Win Rate (Monthly):
     Fraction of calendar months where the month-end NAV > month-start NAV.
@@ -64,25 +65,6 @@ def calc_positive_freq(returns: Optional[pd.Series]) -> Optional[float]:
 # ─────────────────────────────────────────────────────────────────────────────
 # NEGATIVE RETURN FREQUENCY
 # ─────────────────────────────────────────────────────────────────────────────
-
-def calc_negative_freq(returns: Optional[pd.Series]) -> Optional[float]:
-    """
-    Fraction of trading days with a strictly negative return.
-
-    Args:
-        returns: Daily simple return series
-
-    Returns:
-        Float between 0 and 1, or None if insufficient data.
-    """
-    if returns is None or len(returns) < 10:
-        return None
-
-    clean = returns.replace([np.inf, -np.inf], np.nan).dropna()
-    if len(clean) == 0:
-        return None
-
-    return float((clean < 0).sum() / len(clean))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,10 +112,9 @@ def calc_all_stability(
         monthly_returns: Monthly simple return series
 
     Returns:
-        Dict with keys: positive_freq, negative_freq, win_rate
+        Dict with keys: positive_freq, win_rate
     """
     return {
         "positive_freq": calc_positive_freq(returns),
-        "negative_freq": calc_negative_freq(returns),
         "win_rate":      calc_win_rate(monthly_returns),
     }

@@ -6,11 +6,11 @@ Predictive Analytics — Risk Forecasting & Scenario Analysis
 Applies to a single fund selected in the sidebar.
 
 Three tabs:
-  📊 Volatility Forecast  — GARCH(1,1): conditional vol, 30/60/90 day
+  Volatility Forecast  — GARCH(1,1): conditional vol, 30/60/90 day
                             forecast, VaR, CVaR, model parameters
-  🎲 Monte Carlo          — Block bootstrap: fan chart, probability of
+  Monte Carlo          — Block bootstrap: fan chart, probability of
                             shortfall, terminal return distribution
-  📉 Drawdown Risk        — Derived from Monte Carlo paths: max drawdown
+  Drawdown Risk        — Derived from Monte Carlo paths: max drawdown
                             distribution, Drawdown at Risk, exceed probs
 
 Note (Phase E): Market Regimes tab (HMM) removed — hmmlearn has Python
@@ -32,16 +32,21 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import date, timedelta
 
 from data.fund_loader      import get_all_categorized_schemes, get_nav_history
 from data.nav_processor    import process_nav, compute_daily_returns
 from analytics.garch_model import get_garch_summary
 from analytics.monte_carlo import run_monte_carlo
-from visualizations._theme import base_layout, get_color, BG_PAPER, GRID_COLOR
-from utils.constants  import CATEGORIES, APP_TITLE, APP_ICON, TRADING_DAYS_PER_YEAR
-from utils.formatters import fmt_pct, fmt_ratio
-from utils.session    import render_refresh_button
+from visualizations._theme import base_layout, get_color
+from utils.constants  import TRADING_DAYS_PER_YEAR
+from utils.formatters import fmt_pct
+from utils.ui          import (
+    sidebar_header, category_selector, plan_selector, rf_control,
+    tri_status, render_refresh_button,
+    chart,
+    export_button,
+)
+from utils import theme as T
 
 st.set_page_config(
     page_title = "Predictive Analytics — MF Analytics",
@@ -53,21 +58,11 @@ st.set_page_config(
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title(f"{APP_ICON} {APP_TITLE}")
-    st.divider()
+    sidebar_header()
 
-    category = st.selectbox(
-        "📂 Category", CATEGORIES,
-        index=CATEGORIES.index(st.session_state.get("selected_category", "Large Cap")),
-    )
-    st.session_state["selected_category"] = category
+    category = category_selector()
 
-    plan_type = st.radio(
-        "Plan Universe", ["Direct", "Regular"],
-        index=0 if st.session_state.get("plan_type", "Direct") == "Direct" else 1,
-        horizontal=True,
-    )
-    st.session_state["plan_type"] = plan_type
+    plan_type = plan_selector()
 
     with st.spinner("Loading funds…"):
         all_cat   = get_all_categorized_schemes(plan_type=plan_type)
@@ -79,50 +74,17 @@ with st.sidebar:
     fund_names = [f["name"] for f in fund_list]
     fund_codes = {f["name"]: f["code"] for f in fund_list}
     prev       = st.session_state.get("selected_fund", fund_names[0])
-    sel_name   = st.selectbox("🏦 Fund", fund_names,
+    sel_name   = st.selectbox("Fund", fund_names,
                                index=fund_names.index(prev) if prev in fund_names else 0)
     st.session_state["selected_fund"] = sel_name
     sel_code = fund_codes[sel_name]
 
     st.divider()
 
-    col_rf, col_down, col_up = st.columns([3, 1, 1])
-    rf_pct = col_rf.slider("Risk-Free Rate (%)", 4.0, 9.0,
-                        st.session_state.get("rf_rate", 7.0), 0.1)
-    if col_down.button("−", key=f"rf_down_{__file__}"):
-        rf_pct = max(4.0, round(rf_pct - 0.1, 1))
-        st.session_state["rf_rate"] = rf_pct
-        st.rerun()
-    if col_up.button("+", key=f"rf_up_{__file__}"):
-        rf_pct = min(9.0, round(rf_pct + 0.1, 1))
-        st.session_state["rf_rate"] = rf_pct
-        st.rerun()
-        
-    rf_rate = rf_pct / 100
-    st.session_state["rf_rate"] = rf_pct
+    rf_pct, rf_rate = rf_control()
 
-    st.divider()
     render_refresh_button()
-    from data.tri_loader import get_tri_nav, get_tri_staleness_warning, is_tri_available
-    st.divider()
-    st.markdown("**📡 Benchmark Data**")
-    for idx_name, label in [
-        ("NIFTY 500",        "Nifty 500"),
-        ("NIFTY 100",        "Nifty 100"),
-        ("NIFTY MIDCAP 150", "Midcap 150"),
-        ("NIFTY SMALLCAP 250", "Smallcap 250"),
-        ("NIFTY 50",         "Nifty 50"),
-    ]:
-        if is_tri_available(idx_name):
-             nav = get_tri_nav(idx_name)
-             warning = get_tri_staleness_warning(idx_name)
-             last_date = nav.index[-1].strftime("%d %b %Y") if nav is not None else "?"
-             if warning:
-                 st.warning(f"{label}: {last_date} ⚠️", icon="⚠️")
-             else:
-                st.caption(f"✅ {label}: {last_date}")
-        else:
-            st.caption(f"🔄 {label}: proxy")
+    tri_status()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CHART HELPERS  (page-local — these charts are not reused elsewhere)
@@ -217,7 +179,7 @@ def _plot_mc_fan(mc: dict, fund_name: str) -> go.Figure:
             x=future_dates, y=nav_pcts[lower_p],
             mode="lines", line=dict(width=0),
             fill="tonexty",
-            fillcolor=f"rgba(33,150,243,{opacity})",
+            fillcolor=T.rgba(T.DATA_PRIMARY, opacity),
             name=label,
             hoverinfo="skip",
         ))
@@ -226,12 +188,12 @@ def _plot_mc_fan(mc: dict, fund_name: str) -> go.Figure:
     fig.add_trace(go.Scatter(
         x=future_dates, y=nav_pcts[50],
         mode="lines", name="Median (P50)",
-        line=dict(color="#2196F3", width=2.5),
+        line=dict(color=T.DATA_PRIMARY, width=2.5),
         hovertemplate="%{x|%b %Y}: NAV %{y:.1f}<extra>Median</extra>",
     ))
 
     # P10 and P90 as labelled boundaries
-    for p, clr, nm in [(10, "#FF9800", "P10"), (90, "#4CAF50", "P90")]:
+    for p, clr, nm in [(10, T.DOWN, "P10"), (90, T.UP, "P90")]:
         fig.add_trace(go.Scatter(
             x=future_dates, y=nav_pcts[p],
             mode="lines", name=nm,
@@ -273,19 +235,19 @@ def _plot_terminal_distribution(mc: dict) -> go.Figure:
     if len(neg_rets) > 0:
         fig.add_trace(go.Histogram(
             x=neg_rets, nbinsx=60,
-            marker_color="rgba(244,67,54,0.7)", name="Loss",
+            marker_color=T.rgba(T.DOWN, 0.7), name="Loss",
             hovertemplate="Return %{x:.1f}%: %{y} paths<extra>Loss</extra>",
         ))
     if len(pos_rets) > 0:
         fig.add_trace(go.Histogram(
             x=pos_rets, nbinsx=80,
-            marker_color="rgba(76,175,80,0.7)", name="Gain",
+            marker_color=T.rgba(T.UP, 0.7), name="Gain",
             hovertemplate="Return %{x:.1f}%: %{y} paths<extra>Gain</extra>",
         ))
 
     # VaR line
     fig.add_vline(
-        x=-var_95_pct, line_dash="dash", line_color="#FF9800",
+        x=-var_95_pct, line_dash="dash", line_color=T.WARN,
         annotation_text=f"VaR 95% = {var_95_pct:.1f}%",
         annotation_position="top right",
     )
@@ -307,19 +269,21 @@ def _plot_terminal_distribution(mc: dict) -> go.Figure:
 def _plot_dd_distribution(mc: dict) -> go.Figure:
     """Histogram of maximum drawdown across all simulated paths."""
     max_dds      = mc["terminal_stats"]["max_drawdowns"] * 100   # in %, negative
-    dar_95_pct   = mc["terminal_stats"]["drawdown_at_risk_95"] * 100  # negative
+    # drawdown_at_risk_95 is a POSITIVE severity magnitude; the x-axis of this
+    # histogram is negative drawdowns, so negate it to place the line.
+    dar_95_pct   = -mc["terminal_stats"]["drawdown_at_risk_95"] * 100
 
     fig = go.Figure()
     fig.add_trace(go.Histogram(
         x=max_dds, nbinsx=80,
-        marker_color="rgba(244,67,54,0.65)",
+        marker_color=T.rgba(T.DOWN, 0.65),
         name="Max Drawdown",
         hovertemplate="Max DD %{x:.1f}%: %{y} paths<extra></extra>",
     ))
 
     # Drawdown at Risk line (95th percentile of drawdown = worst 5% of outcomes)
     fig.add_vline(
-        x=dar_95_pct, line_dash="dash", line_color="#FF9800",
+        x=dar_95_pct, line_dash="dash", line_color=T.WARN,
         annotation_text=f"Drawdown at Risk (95%) = {abs(dar_95_pct):.1f}%",
         annotation_position="top left",
     )
@@ -348,7 +312,7 @@ def _plot_dd_distribution(mc: dict) -> go.Figure:
 # ─────────────────────────────────────────────────────────────────────────────
 # HEADER + DISCLAIMER
 # ─────────────────────────────────────────────────────────────────────────────
-st.title("🔮 Predictive Analytics")
+st.title("Predictive Analytics")
 st.caption(f"Single-fund risk forecasting and scenario analysis · {sel_name[:70]}")
 
 st.warning(
@@ -356,7 +320,6 @@ st.warning(
     "GARCH forecasts future *volatility* (empirically valid). Monte Carlo shows the *range of outcomes* "
     "consistent with the historical return distribution. Neither tool predicts the direction or magnitude "
     "of future returns. Past distributions may not reflect future market conditions.",
-    icon="⚠️",
 )
 st.divider()
 
@@ -366,7 +329,7 @@ st.divider()
 s1, s2 = st.columns(2, gap="large")
 
 with s1:
-    st.markdown("**📅 Simulation Horizon**")
+    st.markdown("**Simulation Horizon**")
     horizon_label = st.radio(
         "Horizon", ["1 Year", "3 Years", "5 Years"],
         index=1, horizontal=True, label_visibility="collapsed",
@@ -374,7 +337,7 @@ with s1:
     horizon_years = {"1 Year": 1.0, "3 Years": 3.0, "5 Years": 5.0}[horizon_label]
 
 with s2:
-    st.markdown("**🎲 Monte Carlo Paths**")
+    st.markdown("**Monte Carlo Paths**")
     n_sims_label = st.radio(
         "Paths", ["1,000 (fast)", "5,000", "10,000 (recommended)"],
         index=2, horizontal=True, label_visibility="collapsed",
@@ -395,8 +358,8 @@ for k in list(st.session_state.keys()):
             st.session_state.pop(k, None)
 
 run_btn = st.button(
-    "⚡ Run Analysis",
-    type="primary", use_container_width=True,
+    "Run Analysis",
+    type="primary", width="stretch",
 )
 
 if run_btn or st.session_state.get(run_key):
@@ -460,9 +423,9 @@ if run_btn or st.session_state.get(run_key):
     # TABS
     # ─────────────────────────────────────────────────────────────────────
     tab1, tab2, tab3 = st.tabs([
-        "📊 Volatility Forecast",
-        "🎲 Monte Carlo",
-        "📉 Drawdown Risk",
+        "Volatility Forecast",
+        "Monte Carlo",
+        "Drawdown Risk",
     ])
 
     # ─────────────────────────────────────────────────────────────────────
@@ -481,8 +444,8 @@ if run_btn or st.session_state.get(run_key):
 
             # ── KPI row ───────────────────────────────────────────────────
             k1, k2, k3, k4, k5 = st.columns(5)
-            regime_color = {"High": "🔴", "Normal": "🟡", "Low": "🟢"}.get(
-                garch["current_vol_regime"], "⚪"
+            regime_color = {"High": "", "Normal": "", "Low": ""}.get(
+                garch["current_vol_regime"], ""
             )
             k1.metric(
                 "Current Vol (Ann.)",
@@ -499,12 +462,12 @@ if run_btn or st.session_state.get(run_key):
             st.divider()
 
             # ── Conditional volatility chart ──────────────────────────────
-            st.plotly_chart(_plot_garch_vol(garch, sel_name), use_container_width=True)
+            chart(_plot_garch_vol(garch, sel_name))
 
             st.divider()
 
             # ── VaR / CVaR ────────────────────────────────────────────────
-            st.subheader("📉 1-Day Value at Risk & Expected Shortfall")
+            st.subheader("1-Day Value at Risk & Expected Shortfall")
             st.caption(
                 "VaR: maximum expected daily loss at the given confidence level.  "
                 "CVaR (Expected Shortfall): average loss in the worst (1-CL)% of days.  "
@@ -522,7 +485,7 @@ if run_btn or st.session_state.get(run_key):
             st.divider()
 
             # ── Model parameters ──────────────────────────────────────────
-            st.subheader("🔧 Model Parameters")
+            st.subheader("Model Parameters")
             pers = garch["persistence"]
             hl   = garch["half_life_days"]
             p1, p2, p3, p4, p5 = st.columns(5)
@@ -539,15 +502,13 @@ if run_btn or st.session_state.get(run_key):
             if pers is not None:
                 if pers > 0.97:
                     st.info(
-                        f"ℹ️ High persistence (α+β = {pers:.4f}): volatility shocks decay very slowly. "
+                        f"High persistence (α+β = {pers:.4f}): volatility shocks decay very slowly. "
                         "Current elevated or suppressed volatility is likely to persist for weeks.",
-                        icon="📌",
                     )
                 elif pers < 0.85:
                     st.info(
-                        f"ℹ️ Low persistence (α+β = {pers:.4f}): volatility reverts quickly to average. "
+                        f"Low persistence (α+β = {pers:.4f}): volatility reverts quickly to average. "
                         "Current conditions are unlikely to persist beyond a few days.",
-                        icon="📌",
                     )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -598,14 +559,14 @@ if run_btn or st.session_state.get(run_key):
             st.divider()
 
             # ── Fan chart ─────────────────────────────────────────────────
-            st.plotly_chart(_plot_mc_fan(mc, sel_name), use_container_width=True)
+            chart(_plot_mc_fan(mc, sel_name))
 
             # ── Terminal return distribution ───────────────────────────────
             st.subheader("Terminal Return Distribution")
             col_hist, col_table = st.columns([2, 1], gap="large")
 
             with col_hist:
-                st.plotly_chart(_plot_terminal_distribution(mc), use_container_width=True)
+                chart(_plot_terminal_distribution(mc))
 
             with col_table:
                 st.markdown(f"**Outcome Percentiles ({horizon_label})**")
@@ -614,7 +575,9 @@ if run_btn or st.session_state.get(run_key):
                     {"Percentile": f"P{p}", "Total Return": f"{v:.1f}%"}
                     for p, v in sorted(pct_data.items())
                 ])
-                st.dataframe(pct_df, use_container_width=True, hide_index=True)
+                st.dataframe(pct_df, width="stretch", hide_index=True)
+                export_button(pct_df, "outcome_percentiles.csv",
+                              label="↓ Percentiles CSV", key="dl_pa_pct")
 
                 st.markdown(f"**Shortfall Probabilities**")
                 vc = ts["var_cvar"]
@@ -625,7 +588,10 @@ if run_btn or st.session_state.get(run_key):
                         "VaR":  fmt_pct(vals["var"]),
                         "CVaR": fmt_pct(vals["cvar"]),
                     })
-                st.dataframe(pd.DataFrame(sf_rows), use_container_width=True, hide_index=True)
+                _sf_df = pd.DataFrame(sf_rows)
+                st.dataframe(_sf_df, width="stretch", hide_index=True)
+                export_button(_sf_df, "shortfall_var_cvar.csv",
+                              label="↓ VaR / CVaR CSV", key="dl_pa_sf")
 
     # ─────────────────────────────────────────────────────────────────────
     # TAB 3: DRAWDOWN RISK
@@ -645,20 +611,26 @@ if run_btn or st.session_state.get(run_key):
             )
 
             # ── KPI row ───────────────────────────────────────────────────
+            # dd_pcts are POSITIVE severity magnitudes (see monte_carlo.py):
+            # percentile p = "p% of paths had a drawdown no worse than this",
+            # so severity increases left to right across this row.
             dd_pcts = ts["max_dd_percentiles"]
             k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Median Max DD",     f"{abs(dd_pcts[50]):.1f}%",
-                      help="Half of all paths experience a drawdown worse than this")
-            k2.metric("P75 Max DD",        f"{abs(dd_pcts[75]):.1f}%")
-            k3.metric("P90 Max DD",        f"{abs(dd_pcts[90]):.1f}%")
-            k4.metric("Drawdown at Risk",  f"{abs(ts['drawdown_at_risk_95'])*100:.1f}%",
-                      help="95th percentile max drawdown — exceeded in only 5% of scenarios")
-            k5.metric("P99 Max DD",        f"{abs(dd_pcts[95]):.1f}%")
+            k1.metric("Median Max DD",     f"{dd_pcts[50]:.1f}%",
+                      help="Half of all simulated paths saw a drawdown worse than this")
+            k2.metric("P75 Max DD",        f"{dd_pcts[75]:.1f}%",
+                      help="1 path in 4 saw a drawdown worse than this")
+            k3.metric("P90 Max DD",        f"{dd_pcts[90]:.1f}%",
+                      help="1 path in 10 saw a drawdown worse than this")
+            k4.metric("Drawdown at Risk",  f"{ts['drawdown_at_risk_95']*100:.1f}%",
+                      help="Only 5% of simulated paths saw a drawdown worse than this")
+            k5.metric("P99 Max DD",        f"{dd_pcts[99]:.1f}%",
+                      help="The severe tail — 1 path in 100 was worse than this")
 
             st.divider()
 
             # ── Distribution chart ────────────────────────────────────────
-            st.plotly_chart(_plot_dd_distribution(mc), use_container_width=True)
+            chart(_plot_dd_distribution(mc))
 
             st.divider()
 
@@ -676,11 +648,10 @@ if run_btn or st.session_state.get(run_key):
                     }
                     for thr, prob in sorted(dd_probs.items())
                 ]
-                st.dataframe(
-                    pd.DataFrame(prob_rows),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                _prob_df = pd.DataFrame(prob_rows)
+                st.dataframe(_prob_df, width="stretch", hide_index=True)
+                export_button(_prob_df, "drawdown_probabilities.csv",
+                              label="↓ Drawdown probs CSV", key="dl_pa_dd")
 
             with col_note:
                 st.markdown("**How to read this table**")
@@ -697,7 +668,6 @@ if run_btn or st.session_state.get(run_key):
 
 else:
     st.info(
-        "Configure settings above and click **⚡ Run Analysis** to compute "
+        "Configure settings above and click **Run Analysis** to compute "
         "GARCH volatility forecasts, Monte Carlo scenario analysis, and drawdown risk.",
-        icon="🔮",
     )
